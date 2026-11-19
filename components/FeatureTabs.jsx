@@ -17,7 +17,7 @@ const TABS = [
   {
     id: 'kartu',
     title: 'Blokir kartu darurat',
-    desc: 'Kartu hilang? Bantu langsung menyiapkan blokir sementara dan menghubungkan Anda ke agen untuk kartu pengganti.',
+    desc: 'Kartu hilang? Agent Nusa langsung menyiapkan blokir sementara dan menghubungkan Anda ke agen untuk kartu pengganti.',
     user: 'Kartu debit saya hilang, tolong diblokir sekarang.',
     bot: 'Saya bantu blokir sementara kartu berakhiran 4821. Verifikasi OTP dilakukan di halaman resmi Agent Nusa, bukan di chat ini.',
     label: 'Kartu debit Agent Nusa · •••• 4821',
@@ -60,7 +60,7 @@ export default function FeatureTabs() {
         <div className="lp-demo-head">
           <span className="lp-demo-ava"><img src={`/assets/${t.pose}.png`} alt="" /></span>
           <span>
-            <b>Bantu</b>
+            <b>Agent Nusa</b>
             <small><i />Online</small>
           </span>
         </div>

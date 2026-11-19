@@ -5,8 +5,8 @@ import { useEffect, useRef, useState } from 'react';
 /*
   Animasi "video" di dalam HP. Satu state `step` menggerakkan semua adegan:
    0 notifikasi transfer gagal      6 pesan pengguna
-   1 maskot bingung (bubble 1)      7 Bantu mengetik
-   2 maskot masih bingung           8 jawaban Bantu + kartu transaksi
+   1 maskot bingung (bubble 1)      7 Agent Nusa mengetik
+   2 maskot masih bingung           8 jawaban Agent Nusa + kartu transaksi
    3 maskot lihat tombol chat       9 chip "Coba transfer ulang" diketuk
    4 maskot mengetuk tombol chat   10 pesan pengguna kedua + mengetik
    5 chat terbuka (slide up)       11 berhasil + maskot bersorak
@@ -19,7 +19,7 @@ const STATIC_STEP = 11; // tampilan akhir untuk pengguna yang mengurangi gerakan
 const THOUGHTS = {
   1: 'Lho, kok transfernya gagal?',
   2: 'Telepon pasti antre lama… gimana ya?',
-  3: 'Eh, ada tombol chat Bantu!'
+  3: 'Eh, ada tombol chat Agent Nusa!'
 };
 
 const CONFETTI = Array.from({ length: 16 }, (_, i) => ({
@@ -82,7 +82,7 @@ export default function PhoneDemo() {
       <div
         className="lp-phone"
         role="img"
-        aria-label="Animasi di layar HP: maskot Bantu bingung karena transfer gagal, lalu membuka chat, bertanya ke Bantu, dan transfernya berhasil."
+        aria-label="Animasi di layar HP: maskot Agent Nusa bingung karena transfer gagal, lalu membuka chat, bertanya ke Agent Nusa, dan transfernya berhasil."
       >
         <span className="lp-island" aria-hidden="true" />
         <div className={screenCls} aria-hidden="true">
@@ -162,7 +162,7 @@ export default function PhoneDemo() {
           <div className={'lp-sheet' + (chatOpen ? ' open' : '')}>
             <div className="lp-sh-head">
               <span className="lp-sh-ava"><img src={s >= 11 ? '/assets/cheer.png' : '/assets/ask.png'} alt="" /></span>
-              <span className="lp-sh-name"><b>Bantu</b><small><i />Online · Agent Nusa</small></span>
+              <span className="lp-sh-name"><b>Agent Nusa</b><small><i />Online · Agent Nusa</small></span>
             </div>
             <div className={'lp-msgs' + (s === 11 ? ' dim' : '')}>
               {s >= 6 && <div className="lp-b user">Transfer ke Rina belum masuk, tolong dicek.</div>}

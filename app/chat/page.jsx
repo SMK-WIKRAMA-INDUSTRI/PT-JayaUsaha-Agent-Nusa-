@@ -325,9 +325,9 @@ export default function Page() {
           </nav>
           <div className="side-spacer" />
           <div className="mascot-card">
-            <img src="/assets/hero.png" alt="Maskot Bantu melambaikan tangan" className="mascot-hero" />
+            <img src="/assets/hero.png" alt="Maskot Agent Nusa melambaikan tangan" className="mascot-hero" />
             <div className="mascot-title">Ada yang bisa kami bantu?</div>
-            <div className="mascot-sub">Bantu siaga 24 jam untuk transaksi dan kartu Anda.</div>
+            <div className="mascot-sub">Agent Nusa siaga 24 jam untuk transaksi dan kartu Anda.</div>
           </div>
         </aside>
 
@@ -338,7 +338,7 @@ export default function Page() {
               <img key={poseFile} src={`/assets/${poseFile}.png`} alt="" className={'p-' + poseFile} />
             </div>
             <div className="chat-title">
-              <div className="chat-name">Bantu</div>
+              <div className="chat-name">Agent Nusa</div>
               <div className="chat-status">
                 <span className={'dot' + (statusErr ? ' err' : connected ? ' on' : '')} />
                 <span>{statusText}</span>
@@ -354,12 +354,12 @@ export default function Page() {
           <div className="messages" ref={messagesRef} role="log" aria-live="polite" aria-label="Percakapan">
             <div className="stamp">Hari ini, 14:12</div>
             <div className="msg bot">
-              Halo, Dimas! Saya Bantu, asisten virtual Agent Nusa. Pilih topik di bawah atau ketik pertanyaan Anda.
+              Halo, Dimas! Saya Agent Nusa. Pilih topik di bawah atau ketik pertanyaan Anda.
               <span className="small">Demi keamanan, jangan pernah membagikan PIN, password, atau kode OTP kepada siapa pun, termasuk kami.</span>
             </div>
             {ready && !settings.apiKey && (
               <div className="msg bot">
-                Bantu belum bisa menjawab karena API key belum diisi.
+                Agent Nusa belum bisa menjawab karena API key belum diisi.
                 <div className="row">
                   <button type="button" className="btn primary" onClick={() => go('settings')}>Atur API key</button>
                 </div>
@@ -368,7 +368,7 @@ export default function Page() {
             {chat.map((m) => (
               <div key={m.id} className={'msg ' + (m.role === 'user' ? 'user' : 'bot') + (m.err ? ' err' : '')}>
                 {m.pending ? (
-                  <span className="typing" role="img" aria-label="Bantu sedang mengetik"><i /><i /><i /></span>
+                  <span className="typing" role="img" aria-label="Agent Nusa sedang mengetik"><i /><i /><i /></span>
                 ) : (
                   m.content
                 )}
@@ -429,7 +429,7 @@ export default function Page() {
           </div>
           <div className="tx-head">
             <h2>Riwayat Transaksi</h2>
-            <span className="tx-note">Ketuk untuk tanya Bantu</span>
+            <span className="tx-note">Ketuk untuk tanya Agent Nusa</span>
           </div>
           <div className="tabs" role="group" aria-label="Filter transaksi">
             {[['all', 'Semua'], ['in', 'Masuk'], ['out', 'Keluar']].map(([k, l]) => (
@@ -444,7 +444,7 @@ export default function Page() {
                 key={t.name + t.date + t.time}
                 type="button"
                 className="tx-row"
-                aria-label={`${t.name}, ${t.dir === 'in' ? 'masuk' : 'keluar'} ${rp(t.amt)}, ${t.status}. Tanyakan ke Bantu`}
+                aria-label={`${t.name}, ${t.dir === 'in' ? 'masuk' : 'keluar'} ${rp(t.amt)}, ${t.status}. Tanyakan ke Agent Nusa`}
                 onClick={() => askAbout(t)}
               >
                 <span className="tx-ava" aria-hidden="true">{t.ini}</span>
@@ -468,7 +468,7 @@ export default function Page() {
               <div className="avatar"><img src="/assets/laptop.png" alt="" /></div>
               <div>
                 <h1>Pengaturan AI</h1>
-                <p>Masukkan API key Netra Runtime agar Bantu bisa menjawab. Pengaturan disimpan di browser ini saja.</p>
+                <p>Masukkan API key Netra Runtime agar Agent Nusa bisa menjawab. Pengaturan disimpan di browser ini saja.</p>
               </div>
             </header>
 

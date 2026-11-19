@@ -1,6 +1,6 @@
 # Chatbot Agent Nusa (Next.js)
 
-Chatbot customer service bank dengan tampilan glass, riwayat transaksi dummy, maskot Bantu, dan AI dari Netra Runtime (`POST /v1/chat/completions`). Siap di-deploy ke Vercel.
+Chatbot customer service bank dengan tampilan glass, riwayat transaksi dummy, maskot Agent Nusa, dan AI dari Netra Runtime (`POST /v1/chat/completions`). Siap di-deploy ke Vercel.
 
 ## Tech stack
 
@@ -9,7 +9,7 @@ Chatbot customer service bank dengan tampilan glass, riwayat transaksi dummy, ma
 - `app/chat/page.jsx` (`/chat`): aplikasi chat, riwayat transaksi, dan pengaturan API key
 - `app/api/chat/route.js`: proxy ke Netra, meneruskan stream jawaban apa adanya
 - `lib/data.js`: data demo dan nilai default; `lib/api.js`: klien streaming
-- `public/assets/`: pose maskot Bantu
+- `public/assets/`: pose maskot Agent Nusa
 
 ## Jalankan lokal
 
