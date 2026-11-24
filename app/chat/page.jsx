@@ -2,11 +2,15 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { CHIPS, DEFAULTS, TXS, demoContext, normalizeSettings, rp } from '../../lib/data';
+import { CHIPS, DEFAULTS, MAX_CONTEXT, TXS, buildContext, contextForPrompt, demoContext, normalizeSettings, rp } from '../../lib/data';
 import { callChat } from '../../lib/api';
+import { extractPdfText } from '../../lib/pdf';
 
 const LS_SETTINGS = 'nusa.settings.v1';
 const LS_CHAT = 'nusa.chat.v1';
+const LS_DOCS = 'nusa.docs.v1';
+const MAX_PDF_BYTES = 20 * 1024 * 1024;
+const fmtNum = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
 const POSES = { ask: 'ask', think: 'think', work: 'laptop', ok: 'ok', err: 'bow', alert: 'announce' };
 
 const newId = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -65,9 +69,12 @@ export default function Page() {
   const [showKey, setShowKey] = useState(false);
   const [test, setTest] = useState({ text: '', ok: null, running: false });
   const [toastMsg, setToastMsg] = useState('');
+  const [documents, setDocuments] = useState([]); // { id, name, pages, text }
+  const [pdfStatus, setPdfStatus] = useState({ text: '', ok: null, reading: false });
 
   const chatRef = useRef([]);
   const settingsRef = useRef(DEFAULTS);
+  const documentsRef = useRef([]);
   const abortRef = useRef(null);
   const poseTimer = useRef(null);
   const toastTimer = useRef(null);
@@ -77,13 +84,22 @@ export default function Page() {
 
   chatRef.current = chat;
   settingsRef.current = settings;
+  documentsRef.current = documents;
 
   /* ---------- muat & simpan ---------- */
   useEffect(() => {
     const s = { ...DEFAULTS, ...readLS(LS_SETTINGS, {}) };
     const saved = readLS(LS_CHAT, []);
+    const savedDocs = readLS(LS_DOCS, []);
     setSettings(s);
     setDraft(s);
+    setDocuments(
+      Array.isArray(savedDocs)
+        ? savedDocs
+            .filter((d) => d && typeof d.name === 'string' && typeof d.text === 'string')
+            .map((d) => ({ id: newId(), name: d.name, pages: Number(d.pages) || 0, text: d.text }))
+        : []
+    );
     setChat(
       Array.isArray(saved)
         ? saved
@@ -107,6 +123,10 @@ export default function Page() {
   useEffect(() => {
     if (ready && !busy) writeLS(LS_CHAT, chat.filter(sendable).map(({ role, content }) => ({ role, content })));
   }, [ready, busy, chat]);
+
+  useEffect(() => {
+    if (ready) writeLS(LS_DOCS, documents.map(({ name, pages, text }) => ({ name, pages, text })));
+  }, [ready, documents]);
 
   useEffect(() => {
     clearTimeout(poseTimer.current);
@@ -161,7 +181,8 @@ export default function Page() {
     const history = [...chatRef.current.filter(sendable), { role: 'user', content: text }]
       .slice(-20)
       .map(({ role, content }) => ({ role, content }));
-    const messages = [{ role: 'system', content: s.systemPrompt + '\n\n' + demoContext() }, ...history];
+    const extra = contextForPrompt(s.contextText, documentsRef.current);
+    const messages = [{ role: 'system', content: s.systemPrompt + '\n\n' + demoContext() + (extra ? '\n\n' + extra : '') }, ...history];
 
     setChat((c) => [...c, { id: uid, role: 'user', content: text }, { id: aid, role: 'assistant', content: '', pending: true }]);
     setInput('');
@@ -268,6 +289,56 @@ export default function Page() {
     setTest({ text: 'API key dihapus dari browser ini.', ok: null, running: false });
   };
 
+  /* ---------- dokumen PDF ---------- */
+  const onPdfChange = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // supaya file yang sama bisa dipilih lagi
+    if (!files.length) return;
+
+    setPdfStatus({ text: `Membaca ${files.length} PDF…`, ok: null, reading: true });
+    const added = [];
+    const failed = [];
+    for (const file of files) {
+      const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+      if (!isPdf) {
+        failed.push(`${file.name} (bukan PDF)`);
+        continue;
+      }
+      if (file.size > MAX_PDF_BYTES) {
+        failed.push(`${file.name} (lebih dari 20 MB)`);
+        continue;
+      }
+      try {
+        const { pages, text } = await extractPdfText(file);
+        if (!text) {
+          failed.push(`${file.name} (tidak ada teks, mungkin hasil scan)`);
+          continue;
+        }
+        added.push({ id: newId(), name: file.name, pages, text });
+      } catch (err) {
+        const msg = err && err.name === 'PasswordException' ? 'dilindungi password' : 'gagal dibaca';
+        failed.push(`${file.name} (${msg})`);
+      }
+    }
+
+    if (added.length) {
+      setDocuments((docs) => [...docs.filter((d) => !added.some((a) => a.name === d.name)), ...added]);
+    }
+    const parts = [];
+    if (added.length) parts.push(`${added.length} PDF berhasil dibaca.`);
+    if (failed.length) parts.push(`Gagal: ${failed.join(', ')}.`);
+    if (!added.length && failed.length && failed.length === files.length && !navigator.onLine) {
+      parts.push('Periksa koneksi internet, pembaca PDF perlu diunduh saat pertama kali.');
+    }
+    setPdfStatus({ text: parts.join(' '), ok: failed.length ? (added.length ? null : false) : true, reading: false });
+  };
+
+  const removeDoc = (id) => {
+    const doc = documents.find((d) => d.id === id);
+    setDocuments((docs) => docs.filter((d) => d.id !== id));
+    setPdfStatus({ text: doc ? `${doc.name} dihapus dari konteks.` : '', ok: null, reading: false });
+  };
+
   const resetDefaults = () => {
     const s = { ...DEFAULTS, apiKey: settings.apiKey };
     setSettings(s);
@@ -279,6 +350,8 @@ export default function Page() {
   const connected = ready && !!settings.apiKey;
   const poseFile = POSES[pose] || 'ask';
   const txs = TXS.filter((t) => txFilter === 'all' || t.dir === txFilter);
+  const contextSize = buildContext(draft.contextText, documents).length;
+  const contextOver = contextSize > MAX_CONTEXT;
   const statusText = !ready
     ? 'Memuat…'
     : connected
@@ -509,7 +582,7 @@ export default function Page() {
                 <div className="field">
                   <label htmlFor="systemPrompt"><span>System prompt</span></label>
                   <textarea id="systemPrompt" rows={7} value={draft.systemPrompt} onChange={upd('systemPrompt')} />
-                  <small>Data demo nasabah (saldo dan riwayat transaksi) otomatis ditambahkan di belakang prompt ini.</small>
+                  <small>Data demo nasabah (saldo dan riwayat transaksi) serta konteks tambahan di bawah otomatis ditambahkan di belakang prompt ini.</small>
                 </div>
 
                 <div className="grid3">
@@ -537,6 +610,62 @@ export default function Page() {
                   <input id="stream" type="checkbox" checked={!!draft.stream} onChange={upd('stream')} />
                   <span>Tampilkan jawaban bertahap (streaming)</span>
                 </label>
+              </fieldset>
+
+              <fieldset className="group">
+                <legend>Konteks tambahan</legend>
+
+                <div className="field">
+                  <label htmlFor="contextText"><span>Konteks teks</span></label>
+                  <textarea
+                    id="contextText"
+                    rows={5}
+                    placeholder="Contoh: Promo bulan ini, jam operasional cabang, kebijakan biaya terbaru…"
+                    value={draft.contextText}
+                    onChange={upd('contextText')}
+                  />
+                  <small>Catatan ini ikut dikirim ke AI setelah Anda klik Simpan pengaturan.</small>
+                </div>
+
+                <div className="field">
+                  <label htmlFor="pdf-input" className="field-label"><span>Dokumen PDF</span></label>
+                  <input
+                    id="pdf-input"
+                    className="file-input"
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    multiple
+                    disabled={pdfStatus.reading}
+                    onChange={onPdfChange}
+                  />
+                  <small>Teks PDF dibaca langsung di browser lalu langsung dipakai sebagai konteks. PDF hasil scan (gambar) tidak bisa dibaca.</small>
+                  <p
+                    id="pdf-status"
+                    className={'pdf-status' + (pdfStatus.ok === true ? ' ok' : pdfStatus.ok === false ? ' bad' : '')}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {pdfStatus.text}
+                  </p>
+                  {documents.length > 0 && (
+                    <ul id="pdf-list" className="pdf-list">
+                      {documents.map((d) => (
+                        <li key={d.id}>
+                          <span className="pdf-name">{d.name}</span>
+                          <span className="pdf-meta">{`${d.pages} halaman · ${fmtNum(d.text.length)} karakter`}</span>
+                          <button type="button" className="btn ghost danger" aria-label={`Hapus ${d.name}`} onClick={() => removeDoc(d.id)}>
+                            Hapus
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                <div className={'context-size' + (contextOver ? ' over' : '')}>
+                  {`Ukuran konteks: ${fmtNum(contextSize)} / ${fmtNum(MAX_CONTEXT)} karakter`}
+                  {contextOver && <span> · terlalu panjang, bagian akhir akan dipotong</span>}
+                </div>
               </fieldset>
 
               <div className="actions">

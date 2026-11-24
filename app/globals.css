@@ -137,6 +137,19 @@ code{font-size:.92em;padding:1px 6px;border-radius:6px;background:rgba(255,255,2
 .actions{display:flex;flex-wrap:wrap;gap:10px}
 .test-result{min-height:24px;margin-top:14px;font-size:13.5px;line-height:1.55}
 .test-result.ok{color:var(--ok)}.test-result.bad{color:var(--bad)}
+.file-input{padding:9px 12px!important;cursor:pointer}
+.file-input::file-selector-button{margin-right:12px;min-height:30px;padding:0 14px;border-radius:10px;border:1px solid var(--b-ctrl);background:#fff;color:var(--navy-900);font-weight:700;font-size:13px;cursor:pointer}
+.pdf-status{margin:0;min-height:0;font-size:13px;line-height:1.5;color:var(--txt2)}
+.pdf-status:empty{display:none}
+.pdf-status.ok{color:var(--ok)}.pdf-status.bad{color:var(--bad)}
+.pdf-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.pdf-list li{display:flex;align-items:center;gap:10px;padding:8px 8px 8px 14px;border-radius:14px;background:rgba(14,33,70,.3);border:1px solid rgba(255,255,255,.24)}
+.pdf-name{flex:1;min-width:0;font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pdf-meta{flex:none;font-size:12px;color:var(--txt2)}
+.pdf-list .btn{min-height:36px;padding:0 12px}
+.context-size{margin:0 0 16px;padding:10px 14px;border-radius:14px;font-size:13px;background:rgba(14,33,70,.3);border:1px solid rgba(255,255,255,.24);color:var(--txt2)}
+.context-size.over{color:var(--navy-900);background:var(--warn);border-color:var(--warn);font-weight:600}
+@media (max-width:560px){.pdf-list li{flex-wrap:wrap}.pdf-meta{order:3;width:100%}}
 
 /* toast + nav */
 .toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,20px);z-index:20;max-width:min(92vw,520px);padding:12px 18px;border-radius:16px;background:rgba(14,33,70,.92);border:1px solid rgba(255,255,255,.4);font-size:13.5px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .25s,transform .25s}
