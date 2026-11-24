@@ -6,6 +6,22 @@ import { CHIPS, DEFAULTS, MAX_CONTEXT, TXS, buildContext, contextForPrompt, demo
 import { callChat } from '../../lib/api';
 import { extractPdfText } from '../../lib/pdf';
 import { MAX_RECORDING_SECONDS, collectTranscript, getMicrophone, openDeepgramSocket, pickRecorderMime } from '../../lib/voice';
+import {
+  CALL_RULES,
+  CHECKING_DELAY_MS,
+  CHECKING_LINES,
+  STILL_CHECKING_DELAY_MS,
+  STILL_CHECKING_LINE,
+  THANKS_FOR_WAITING_LINES,
+  buildGreeting,
+  createAgentAudio,
+  getLineAudio,
+  needsChecking,
+  pickRandom,
+  playAudio,
+  requestSpeech,
+  settlesWithin
+} from '../../lib/speech';
 
 const LS_SETTINGS = 'nusa.settings.v1';
 const LS_CHAT = 'nusa.chat.v1';
@@ -31,6 +47,13 @@ const writeLS = (k, v) => {
   }
 };
 const sendable = (m) => !m.err && !m.skip && !m.pending && m.content;
+const fmtClock = (sec) => `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+// Teks bot yang sedang dibacakan: hanya bagian yang sudah diucapkan yang tampil.
+const visibleText = (m) => (typeof m.shown === 'number' ? m.content.slice(0, m.shown) : m.content);
+const buildSystemPrompt = (s, documents) => {
+  const extra = contextForPrompt(s.contextText, documents);
+  return s.systemPrompt + '\n\n' + demoContext() + (extra ? '\n\n' + extra : '');
+};
 
 // Melepas semua benda yang hidup selama merekam: timer, perekam, mikrofon, dan WebSocket.
 function teardownDictation(d) {
@@ -63,6 +86,11 @@ const HeadsetIcon = () => <Svg size={18}><path d="M5 12a7 7 0 0 1 14 0v4a2 2 0 0
 const HomeIcon = () => <Svg><path d="M4 11 12 4l8 7v8a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z" /></Svg>;
 const SendIcon = () => <Svg strokeWidth="2"><path d="M4 12 20 4l-4 16-4-6.5z" /></Svg>;
 const MicIcon = () => <Svg strokeWidth="2.2"><rect x="9" y="2.5" width="6" height="12" rx="3" /><path d="M5 11.5a7 7 0 0 0 14 0M12 18.5V22M8 22h8" /></Svg>;
+const PhoneIcon = () => (
+  <Svg size={18}>
+    <path d="M5 4h3.5l1.8 4.5-2.3 1.4a11 11 0 0 0 6.1 6.1l1.4-2.3L20 15.5V19a1.5 1.5 0 0 1-1.6 1.5A16.5 16.5 0 0 1 3.5 5.6 1.5 1.5 0 0 1 5 4z" />
+  </Svg>
+);
 const StopIcon = () => <Svg fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2.5" /></Svg>;
 const BankIcon = () => (
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -84,6 +112,9 @@ export default function Page() {
   const [showKey, setShowKey] = useState(false);
   const [showDgKey, setShowDgKey] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState('idle'); // 'idle' | 'connecting' | 'recording' | 'transcribing'
+  const [callStatus, setCallStatusState] = useState('off'); // 'off' | 'connecting' | 'listening' | 'thinking' | 'speaking'
+  const [callTranscript, setCallTranscript] = useState('');
+  const [callSeconds, setCallSeconds] = useState(0);
   const [test, setTest] = useState({ text: '', ok: null, running: false });
   const [toastMsg, setToastMsg] = useState('');
   const [documents, setDocuments] = useState([]); // { id, name, pages, text }
@@ -101,6 +132,9 @@ export default function Page() {
   const micRef = useRef(null);
   const dictationRef = useRef(null); // sesi rekaman yang sedang berjalan, null bila tidak merekam
   const sendRef = useRef(null);
+  // Benda yang hidup selama panggilan (WebSocket, mikrofon, perekam, timer, suara agent). null bila tidak menelepon.
+  const callRef = useRef(null);
+  const endCallRef = useRef(null);
 
   chatRef.current = chat;
   settingsRef.current = settings;
@@ -140,6 +174,8 @@ export default function Page() {
         dictationRef.current = null;
         teardownDictation(d);
       }
+      if (callRef.current) endCallRef.current(callRef.current, '', true);
+      if (abortRef.current) abortRef.current.abort(); // menghentikan suara jawaban yang sedang diputar
     };
   }, []);
 
@@ -148,8 +184,8 @@ export default function Page() {
   }, [ready, settings]);
 
   useEffect(() => {
-    if (ready && !busy) writeLS(LS_CHAT, chat.filter(sendable).map(({ role, content }) => ({ role, content })));
-  }, [ready, busy, chat]);
+    if (ready && !busy && callStatus === 'off') writeLS(LS_CHAT, chat.filter(sendable).map(({ role, content }) => ({ role, content })));
+  }, [ready, busy, callStatus, chat]);
 
   useEffect(() => {
     if (ready) writeLS(LS_DOCS, documents.map(({ name, pages, text }) => ({ name, pages, text })));
@@ -192,9 +228,10 @@ export default function Page() {
   };
 
   /* ---------- kirim pesan ---------- */
-  const send = async (raw) => {
+  // voice: pertanyaan berasal dari mic, jadi jawabannya juga dibacakan dengan suara.
+  const send = async (raw, { voice = false } = {}) => {
     const text = (raw || '').trim();
-    if (!text || busy || dictationRef.current) return; // saat merekam, teks masih dikumpulkan
+    if (!text || busy || dictationRef.current || callRef.current) return; // saat merekam, teks masih dikumpulkan
     const s = settingsRef.current;
     if (!s.apiKey) {
       toast('Isi API key dulu di Pengaturan AI.');
@@ -208,8 +245,7 @@ export default function Page() {
     const history = [...chatRef.current.filter(sendable), { role: 'user', content: text }]
       .slice(-20)
       .map(({ role, content }) => ({ role, content }));
-    const extra = contextForPrompt(s.contextText, documentsRef.current);
-    const messages = [{ role: 'system', content: s.systemPrompt + '\n\n' + demoContext() + (extra ? '\n\n' + extra : '') }, ...history];
+    const messages = [{ role: 'system', content: buildSystemPrompt(s, documentsRef.current) }, ...history];
 
     setChat((c) => [...c, { id: uid, role: 'user', content: text }, { id: aid, role: 'assistant', content: '', pending: true }]);
     setInput('');
@@ -233,14 +269,17 @@ export default function Page() {
         (d) => {
           if (!got) showPose('think');
           got += d;
-          setChat((c) => c.map((m) => (m.id === aid ? { ...m, content: got, pending: false } : m)));
+          // Jawaban suara baru ditampilkan saat dibacakan, supaya teks berjalan seiring suara.
+          if (!voice) setChat((c) => c.map((m) => (m.id === aid ? { ...m, content: got, pending: false } : m)));
         }
       );
       if (!got.trim()) throw new Error('Model mengembalikan jawaban kosong. Coba naikkan Max tokens atau matikan Reasoning.');
+      if (voice) await speakReply(aid, got.trim(), ac.signal);
       showPose('ok', 2800);
     } catch (e) {
       if (e && e.name === 'AbortError') {
         if (!got.trim()) dropReply();
+        else if (voice) revealMessage(aid, got.trim()); // dihentikan saat suara diproses: teks tetap ditampilkan lengkap
         showPose('ask');
       } else {
         dropReply({ id: newId(), role: 'assistant', content: (e && e.message) || 'Terjadi kesalahan.', err: true });
@@ -256,6 +295,26 @@ export default function Page() {
   };
 
   sendRef.current = send;
+
+  /* ---------- suara agent (Deepgram text to speech) ---------- */
+  // Menampilkan seluruh teks pesan bot (tanpa animasi).
+  const revealMessage = (id, content) =>
+    setChat((c) => c.map((m) => (m.id === id ? { ...m, content: content ?? m.content, pending: false, shown: undefined } : m)));
+  const setShown = (id, n) => setChat((c) => c.map((m) => (m.id === id ? { ...m, shown: n } : m)));
+
+  // Membacakan jawaban chat. Teks muncul sejalan dengan suara. Kalau suara gagal, teks tetap ditampilkan lengkap.
+  const speakReply = async (aid, text, signal) => {
+    try {
+      const audio = await createAgentAudio(await requestSpeech(settingsRef.current.deepgramKey, text, signal));
+      setChat((c) => c.map((m) => (m.id === aid ? { ...m, content: text, pending: false, shown: 0 } : m)));
+      await playAudio(audio, text, (n) => setShown(aid, n), signal);
+      revealMessage(aid);
+    } catch (e) {
+      revealMessage(aid, text);
+      if (e && e.name === 'AbortError') throw e;
+      toast((e && e.message) || 'Suara jawaban gagal diputar.');
+    }
+  };
 
   /* ---------- input suara (Deepgram) ---------- */
   const showVoiceError = (msg) => {
@@ -310,7 +369,7 @@ export default function Page() {
       showVoiceError('Suara tidak terdengar jelas. Dekatkan mikrofon, lalu coba lagi.');
     } else {
       // Hasil rekaman dikirim lewat jalur yang sama dengan pertanyaan yang diketik.
-      sendRef.current(full);
+      sendRef.current(full, { voice: true });
     }
   };
 
@@ -324,7 +383,7 @@ export default function Page() {
   };
 
   const startRecording = async () => {
-    if (dictationRef.current || busy) return;
+    if (dictationRef.current || callRef.current || busy) return;
     const s = settingsRef.current;
     if (!s.apiKey) {
       toast('Isi API key dulu di Pengaturan AI.');
@@ -381,8 +440,226 @@ export default function Page() {
     else if (voiceStatus === 'idle') startRecording();
   };
 
+  /* ---------- telepon dengan agent (realtime) ---------- */
+  const setCallStatus = (call, st) => {
+    if (call.ended) return;
+    call.status = st;
+    setCallStatusState(st);
+    if (st === 'listening') showPose('ask');
+    else if (st === 'thinking') showPose('work');
+    else if (st === 'speaking') showPose('ok');
+  };
+
+  // Mematikan semua yang hidup selama panggilan di satu tempat. silent: tanpa pesan (halaman ditutup / chat baru).
+  const endCall = (call, errorMsg = '', silent = false) => {
+    if (!call || call.ended) return;
+    call.ended = true;
+    if (callRef.current === call) callRef.current = null;
+    call.ac.abort(); // membatalkan permintaan ke Netra dan Deepgram, serta menghentikan suara agent
+    clearInterval(call.keepAliveTimer);
+    clearInterval(call.clockTimer);
+    teardownDictation(call);
+    const seconds = call.startedAt ? Math.round((Date.now() - call.startedAt) / 1000) : 0;
+    if (silent) return;
+    setCallStatusState('off');
+    setCallTranscript('');
+    // Kalimat yang terpotong karena panggilan diakhiri tetap ditampilkan lengkap.
+    setChat((c) => c.map((m) => (typeof m.shown === 'number' ? { ...m, shown: undefined } : m)));
+    if (errorMsg) showVoiceError(errorMsg);
+    else {
+      showPose('ask');
+      toast(`Panggilan berakhir (${fmtClock(seconds)}).`);
+    }
+  };
+  endCallRef.current = endCall;
+
+  // Selama agent berpikir atau bicara, rekaman dijeda supaya suara agent tidak terdengar sebagai suara pelanggan.
+  const pauseListening = (call) => {
+    if (call.recorder && call.recorder.state === 'recording') call.recorder.pause();
+  };
+
+  const resumeListening = (call) => {
+    if (call.ended) return;
+    call.finalText = '';
+    call.interimText = '';
+    call.turnEnded = false;
+    setCallTranscript('');
+    if (call.recorder && call.recorder.state === 'paused') call.recorder.resume();
+    setCallStatus(call, 'listening');
+  };
+
+  // Agent membacakan teks sambil menampilkannya sebagai gelembung chat yang berjalan seiring suara.
+  // Kalimat jeda diambil dari cache, jawaban biasa diputar sambil diunduh.
+  const speak = async (call, text, fromCache = false) => {
+    const key = settingsRef.current.deepgramKey;
+    const audio = fromCache
+      ? new Audio(URL.createObjectURL(await getLineAudio(key, text)))
+      : await createAgentAudio(await requestSpeech(key, text, call.ac.signal));
+    if (call.ended) return;
+    const id = newId();
+    setChat((c) => [...c, { id, role: 'assistant', content: text, shown: 0 }]);
+    call.spoken.push(id);
+    setCallStatus(call, 'speaking');
+    try {
+      await playAudio(audio, text, (n) => setShown(id, n), call.ac.signal);
+    } finally {
+      revealMessage(id);
+    }
+  };
+
+  const agentSays = async (call, text) => {
+    try {
+      await speak(call, text);
+    } catch (error) {
+      if (!call.ended) endCall(call, (error && error.message) || 'Suara agent gagal diputar.');
+      return;
+    }
+    resumeListening(call);
+  };
+
+  // Kalimat jeda selagi Netra masih mencari jawaban. Kalau suaranya gagal, panggilan tetap lanjut.
+  const sayWhileChecking = async (call, text) => {
+    try {
+      await speak(call, text, true);
+    } catch {
+      /* jeda dilewati */
+    }
+    setCallStatus(call, 'thinking');
+  };
+
+  const answerCustomer = async (call, question) => {
+    pauseListening(call);
+    setCallStatus(call, 'thinking');
+    setCallTranscript(question);
+    const s = settingsRef.current;
+    const history = [...chatRef.current.filter(sendable), { role: 'user', content: question }]
+      .slice(-20)
+      .map(({ role, content }) => ({ role, content }));
+    const uid = newId();
+    call.spoken = [uid]; // pertanyaan dan kalimat jeda giliran ini, dibuang kalau jawabannya gagal
+    setChat((c) => [...c, { id: uid, role: 'user', content: question }]);
+
+    const messages = [{ role: 'system', content: `${buildSystemPrompt(s, documentsRef.current)}\n\n${CALL_RULES}` }, ...history];
+    let reply = '';
+    const replyPromise = callChat(s, messages, { maxTokens: Number(s.maxTokens) || 600, stream: false, signal: call.ac.signal }, (d) => {
+      reply += d;
+    });
+    replyPromise.catch(() => {}); // ditangani di bawah
+
+    // Seperti CS sungguhan: kalau jawabannya belum siap, agent bilang sedang mengecek.
+    let waited = false;
+    if (needsChecking(question) && !(await settlesWithin(replyPromise, CHECKING_DELAY_MS))) {
+      waited = true;
+      if (call.ended) return;
+      await sayWhileChecking(call, pickRandom(CHECKING_LINES));
+      if (!call.ended && !(await settlesWithin(replyPromise, STILL_CHECKING_DELAY_MS))) {
+        if (call.ended) return;
+        await sayWhileChecking(call, STILL_CHECKING_LINE);
+      }
+    }
+
+    try {
+      await replyPromise;
+      reply = reply.trim();
+      if (!reply) throw new Error('Model mengembalikan jawaban kosong. Coba naikkan Max tokens atau matikan Reasoning.');
+    } catch (error) {
+      if (call.ended) return;
+      const failed = call.spoken;
+      setChat((c) => c.map((m) => (failed.includes(m.id) ? { ...m, skip: true } : m))); // tidak ikut riwayat
+      endCall(call, (error && error.message) || 'Terjadi kesalahan.');
+      return;
+    }
+    if (call.ended) return;
+    if (waited) reply = `${pickRandom(THANKS_FOR_WAITING_LINES)} ${reply}`;
+    await agentSays(call, reply);
+  };
+
+  const handleCallMessage = (call, event) => {
+    // Selama agent berpikir atau bicara, hasil dari Deepgram diabaikan.
+    if (callRef.current !== call || call.status !== 'listening' || typeof event.data !== 'string') return;
+    let data;
+    try {
+      data = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (data.type === 'Results') setCallTranscript(collectTranscript(call, data));
+    // UtteranceEnd: pelanggan sudah diam 1 detik setelah kata terakhir.
+    if (data.type === 'UtteranceEnd' && (call.finalText || call.interimText)) call.turnEnded = true;
+    // UtteranceEnd kadang datang sebelum hasil final kalimat terakhir, jadi tunggu sampai tidak ada teks sementara.
+    if (call.turnEnded && !call.interimText && call.finalText) answerCustomer(call, call.finalText);
+  };
+
+  const startCall = async () => {
+    if (callRef.current || dictationRef.current || busy) return;
+    const s = settingsRef.current;
+    if (!s.apiKey) {
+      toast('Isi API key dulu di Pengaturan AI.');
+      go('settings');
+      return;
+    }
+    if (!s.deepgramKey) {
+      toast('Isi API key Deepgram dulu di Pengaturan AI.');
+      go('settings');
+      return;
+    }
+
+    const call = {
+      status: 'connecting',
+      ac: new AbortController(),
+      socket: null,
+      stream: null,
+      recorder: null,
+      keepAliveTimer: null,
+      clockTimer: null,
+      startedAt: 0,
+      finalText: '',
+      interimText: '',
+      turnEnded: false,
+      spoken: [],
+      ended: false
+    };
+    callRef.current = call;
+    go('chat');
+    setCallStatusState('connecting');
+    setCallTranscript('');
+    setCallSeconds(0);
+    showPose('work');
+
+    try {
+      call.stream = await getMicrophone();
+      if (call.ended) return teardownDictation(call);
+      call.socket = await openDeepgramSocket(s.deepgramKey);
+      if (call.ended) return teardownDictation(call);
+
+      // Suara kalimat jeda diunduh di awal supaya langsung siap saat dibutuhkan.
+      [...CHECKING_LINES, STILL_CHECKING_LINE].forEach((line) => getLineAudio(s.deepgramKey, line).catch(() => {}));
+
+      const mime = pickRecorderMime();
+      call.recorder = mime ? new MediaRecorder(call.stream, { mimeType: mime }) : new MediaRecorder(call.stream);
+      call.socket.addEventListener('message', (event) => handleCallMessage(call, event));
+      call.socket.addEventListener('close', () => endCall(call, 'Sambungan ke Deepgram terputus. Periksa koneksi internet, lalu telepon lagi.'));
+      call.recorder.addEventListener('dataavailable', (event) => {
+        if (event.data.size > 0 && call.socket.readyState === WebSocket.OPEN) call.socket.send(event.data);
+      });
+      call.recorder.start(250); // potongan audio dikirim ke Deepgram setiap 250 milidetik
+      // Deepgram menutup koneksi yang 10 detik tidak menerima apa pun, misalnya saat rekaman dijeda.
+      call.keepAliveTimer = setInterval(() => {
+        if (call.socket.readyState === WebSocket.OPEN) call.socket.send(JSON.stringify({ type: 'KeepAlive' }));
+      }, 5000);
+      call.startedAt = Date.now();
+      call.clockTimer = setInterval(() => setCallSeconds(Math.round((Date.now() - call.startedAt) / 1000)), 1000);
+
+      pauseListening(call);
+      await agentSays(call, buildGreeting());
+    } catch (e) {
+      endCall(call, (e && e.message) || 'Panggilan tidak bisa dimulai.');
+    }
+  };
+
   const newChat = () => {
     cancelRecording();
+    if (callRef.current) endCall(callRef.current, '', true);
     if (abortRef.current) abortRef.current.abort();
     setChat([]);
     showPose(settings.apiKey ? 'ask' : 'alert');
@@ -507,13 +784,22 @@ export default function Page() {
   const contextSize = buildContext(draft.contextText, documents).length;
   const contextOver = contextSize > MAX_CONTEXT;
   const voiceBusy = voiceStatus !== 'idle';
+  const inCall = callStatus !== 'off';
+  const CALL_STATUS_TEXT = {
+    connecting: 'Menyambungkan panggilan…',
+    listening: 'Mendengarkan Anda…',
+    thinking: 'Fitri sedang mengecek…',
+    speaking: 'Fitri sedang bicara…'
+  };
   const VOICE_STATUS_TEXT = {
     connecting: 'Menghubungkan ke Deepgram…',
     recording: 'Mendengarkan… ketuk tombol mic lagi untuk berhenti',
     transcribing: 'Menunggu teks terakhir dari Deepgram…'
   };
   const MIC_LABEL = { idle: 'Rekam suara', connecting: 'Menghubungkan mikrofon', recording: 'Berhenti merekam', transcribing: 'Menunggu teks terakhir' };
-  const statusText = voiceBusy
+  const statusText = inCall
+    ? `Dalam panggilan · ${fmtClock(callSeconds)}`
+    : voiceBusy
     ? VOICE_STATUS_TEXT[voiceStatus]
     : !ready
     ? 'Memuat…'
@@ -581,6 +867,16 @@ export default function Page() {
               </div>
             </div>
             <button type="button" className="btn ghost" onClick={newChat}>Chat baru</button>
+            <button
+              type="button"
+              className="btn ghost call-btn"
+              aria-label="Telepon Agent Nusa"
+              disabled={inCall || busy || voiceBusy}
+              onClick={startCall}
+            >
+              <PhoneIcon />
+              <span className="hide-sm">Telepon</span>
+            </button>
             <button type="button" className="btn ghost" onClick={callAgent}>
               <HeadsetIcon />
               <span className="hide-sm">Hubungi agen</span>
@@ -605,6 +901,13 @@ export default function Page() {
               <div key={m.id} className={'msg ' + (m.role === 'user' ? 'user' : 'bot') + (m.err ? ' err' : '')}>
                 {m.pending ? (
                   <span className="typing" role="img" aria-label="Agent Nusa sedang mengetik"><i /><i /><i /></span>
+                ) : typeof m.shown === 'number' ? (
+                  <>
+                    {/* Pembaca layar langsung mendapat teks lengkap; tampilan berjalan seiring suara. */}
+                    <span className="sr">{m.content}</span>
+                    <span aria-hidden="true">{visibleText(m)}</span>
+                    <span className="speak-caret" aria-hidden="true" />
+                  </>
                 ) : (
                   m.content
                 )}
@@ -612,6 +915,22 @@ export default function Page() {
             ))}
           </div>
 
+          {inCall ? (
+          <div className="composer-wrap">
+            <div className={'call-bar ' + callStatus} role="group" aria-label="Panggilan dengan Agent Nusa">
+              <span className="call-wave" aria-hidden="true"><i /><i /><i /><i /></span>
+              <div className="call-info">
+                <div className="call-state" role="status" aria-live="polite">{CALL_STATUS_TEXT[callStatus]}</div>
+                <div className="call-heard">{callTranscript || (callStatus === 'listening' ? 'Silakan bicara…' : '\u00a0')}</div>
+              </div>
+              <span className="call-time">{fmtClock(callSeconds)}</span>
+              <button type="button" className="call-end" onClick={() => callRef.current && endCall(callRef.current)}>
+                <PhoneIcon />
+                <span>Akhiri panggilan</span>
+              </button>
+            </div>
+          </div>
+          ) : (
           <div className="composer-wrap">
             <div className="chips">
               {CHIPS.map(([label, text]) => (
@@ -666,6 +985,7 @@ export default function Page() {
               </button>
             </form>
           </div>
+          )}
         </main>
 
         {/* TRANSAKSI */}
@@ -745,7 +1065,7 @@ export default function Page() {
                 </div>
 
                 <div className="field">
-                  <label htmlFor="deepgramKey"><span>API key Deepgram (input suara)</span></label>
+                  <label htmlFor="deepgramKey"><span>API key Deepgram (suara &amp; telepon)</span></label>
                   <div className="with-btn">
                     <input
                       id="deepgramKey"
@@ -761,7 +1081,7 @@ export default function Page() {
                       {showDgKey ? 'Sembunyikan' : 'Tampilkan'}
                     </button>
                   </div>
-                  <small>Dipakai untuk tombol mic di chat. Key tersimpan di browser ini dan dikirim langsung ke Deepgram, tidak lewat server aplikasi. Mikrofon hanya bisa dipakai di https:// atau localhost.</small>
+                  <small>Dipakai untuk tombol mic, jawaban bersuara, dan tombol Telepon. Key tersimpan di browser ini. Untuk mengenali suara, key dikirim langsung ke Deepgram; untuk suara agent (Flux, suara Fitri), key dikirim lewat server aplikasi ini. Mikrofon hanya bisa dipakai di https:// atau localhost.</small>
                 </div>
 
                 <div className="field">

@@ -118,7 +118,7 @@ export default function Landing() {
       </section>
 
       {/* FITUR TAB */}
-      <section className="lp-sec" id="fitur">
+      <section className="lp-sec glass-bg" id="fitur">
         <div className="lp-wrap">
           <h2 className="lp-h2">Solusi chat yang membuat urusan bank terasa ringan</h2>
           <p className="lp-lead">Pilih skenario, lihat bagaimana Agent Nusa menjawab.</p>
@@ -127,10 +127,12 @@ export default function Landing() {
       </section>
 
       {/* KARTU */}
-      <section className="lp-sec alt">
+      <section className="lp-sec alt glass-bg">
         <div className="lp-wrap">
-          <h2 className="lp-h2">Aman, jujur, dan tetap ada manusia di baliknya</h2>
-          <p className="lp-lead">Tiga prinsip yang dipegang Agent Nusa di setiap percakapan.</p>
+          <div className="lp-sec-head">
+            <h2 className="lp-h2">Aman, jujur, dan tetap ada manusia di baliknya</h2>
+            <p className="lp-lead">Tiga prinsip yang dipegang Agent Nusa di setiap percakapan.</p>
+          </div>
           <div className="lp-cards">
             {CARDS.map((c) => (
               <article key={c.title} className="lp-card3">
@@ -193,10 +195,12 @@ export default function Landing() {
       </section>
 
       {/* CARA KERJA */}
-      <section className="lp-sec alt" id="cara">
+      <section className="lp-sec alt glass-bg" id="cara">
         <div className="lp-wrap">
-          <h2 className="lp-h2">Cara kerjanya sederhana</h2>
-          <p className="lp-lead">Tiga langkah dari pertanyaan sampai selesai.</p>
+          <div className="lp-sec-head">
+            <h2 className="lp-h2">Cara kerjanya sederhana</h2>
+            <p className="lp-lead">Tiga langkah dari pertanyaan sampai selesai.</p>
+          </div>
           <ol className="lp-steps">
             {STEPS.map((s, i) => (
               <li key={s.title} className="lp-step">
@@ -211,7 +215,7 @@ export default function Landing() {
       </section>
 
       {/* FAQ */}
-      <section className="lp-sec" id="faq">
+      <section className="lp-sec glass-bg" id="faq">
         <div className="lp-wrap lp-faq">
           <div>
             <h2 className="lp-h2 left">Pertanyaan yang sering diajukan</h2>
