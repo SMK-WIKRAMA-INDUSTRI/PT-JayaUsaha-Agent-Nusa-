@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { CHIPS, DEFAULTS, MAX_CONTEXT, TXS, buildContext, contextForPrompt, demoContext, normalizeSettings, rp } from '../../lib/data';
 import { callChat } from '../../lib/api';
 import { extractPdfText } from '../../lib/pdf';
+import { MAX_RECORDING_SECONDS, collectTranscript, getMicrophone, openDeepgramSocket, pickRecorderMime } from '../../lib/voice';
 
 const LS_SETTINGS = 'nusa.settings.v1';
 const LS_CHAT = 'nusa.chat.v1';
@@ -31,6 +32,18 @@ const writeLS = (k, v) => {
 };
 const sendable = (m) => !m.err && !m.skip && !m.pending && m.content;
 
+// Melepas semua benda yang hidup selama merekam: timer, perekam, mikrofon, dan WebSocket.
+function teardownDictation(d) {
+  clearTimeout(d.timer);
+  try {
+    if (d.recorder && d.recorder.state !== 'inactive') d.recorder.stop();
+  } catch {
+    /* perekam sudah berhenti */
+  }
+  if (d.stream) d.stream.getTracks().forEach((track) => track.stop()); // mematikan mikrofon
+  if (d.socket && (d.socket.readyState === WebSocket.OPEN || d.socket.readyState === WebSocket.CONNECTING)) d.socket.close();
+}
+
 function Svg({ size = 20, children, ...rest }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...rest}>
@@ -49,6 +62,8 @@ const GearIcon = () => (
 const HeadsetIcon = () => <Svg size={18}><path d="M5 12a7 7 0 0 1 14 0v4a2 2 0 0 1-2 2h-1v-6h3M5 12v4a2 2 0 0 0 2 2h1v-6H5" /></Svg>;
 const HomeIcon = () => <Svg><path d="M4 11 12 4l8 7v8a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z" /></Svg>;
 const SendIcon = () => <Svg strokeWidth="2"><path d="M4 12 20 4l-4 16-4-6.5z" /></Svg>;
+const MicIcon = () => <Svg strokeWidth="2.2"><rect x="9" y="2.5" width="6" height="12" rx="3" /><path d="M5 11.5a7 7 0 0 0 14 0M12 18.5V22M8 22h8" /></Svg>;
+const StopIcon = () => <Svg fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2.5" /></Svg>;
 const BankIcon = () => (
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M3 9.5 12 4l9 5.5" /><path d="M5 10v8M9.5 10v8M14.5 10v8M19 10v8" /><path d="M3 20h18" />
@@ -67,6 +82,8 @@ export default function Page() {
   const [statusErr, setStatusErr] = useState(false);
   const [txFilter, setTxFilter] = useState('all');
   const [showKey, setShowKey] = useState(false);
+  const [showDgKey, setShowDgKey] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState('idle'); // 'idle' | 'connecting' | 'recording' | 'transcribing'
   const [test, setTest] = useState({ text: '', ok: null, running: false });
   const [toastMsg, setToastMsg] = useState('');
   const [documents, setDocuments] = useState([]); // { id, name, pages, text }
@@ -81,6 +98,9 @@ export default function Page() {
   const errTimer = useRef(null);
   const inputRef = useRef(null);
   const messagesRef = useRef(null);
+  const micRef = useRef(null);
+  const dictationRef = useRef(null); // sesi rekaman yang sedang berjalan, null bila tidak merekam
+  const sendRef = useRef(null);
 
   chatRef.current = chat;
   settingsRef.current = settings;
@@ -113,6 +133,13 @@ export default function Page() {
       clearTimeout(poseTimer.current);
       clearTimeout(toastTimer.current);
       clearTimeout(errTimer.current);
+      // Halaman ditutup saat merekam: matikan mikrofon dan sambungan tanpa mengirim apa pun.
+      const d = dictationRef.current;
+      if (d) {
+        d.cancelled = true;
+        dictationRef.current = null;
+        teardownDictation(d);
+      }
     };
   }, []);
 
@@ -167,7 +194,7 @@ export default function Page() {
   /* ---------- kirim pesan ---------- */
   const send = async (raw) => {
     const text = (raw || '').trim();
-    if (!text || busy) return;
+    if (!text || busy || dictationRef.current) return; // saat merekam, teks masih dikumpulkan
     const s = settingsRef.current;
     if (!s.apiKey) {
       toast('Isi API key dulu di Pengaturan AI.');
@@ -228,7 +255,134 @@ export default function Page() {
     }
   };
 
+  sendRef.current = send;
+
+  /* ---------- input suara (Deepgram) ---------- */
+  const showVoiceError = (msg) => {
+    setChat((c) => [...c, { id: newId(), role: 'assistant', content: msg, err: true }]);
+    showPose('err', 4000);
+    setStatusErr(true);
+    clearTimeout(errTimer.current);
+    errTimer.current = setTimeout(() => setStatusErr(false), 4000);
+  };
+
+  const cancelRecording = () => {
+    const d = dictationRef.current;
+    if (!d) return;
+    d.cancelled = true;
+    dictationRef.current = null;
+    teardownDictation(d);
+    setVoiceStatus('idle');
+  };
+
+  // Pesan Deepgram berjenis Results berisi teks. Teks muncul di kolom pertanyaan selagi pelanggan bicara.
+  const handleDictationMessage = (d, event) => {
+    if (dictationRef.current !== d || typeof event.data !== 'string') return;
+    let data;
+    try {
+      data = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (data.type !== 'Results') return;
+    setInput(`${d.typedText} ${collectTranscript(d, data)}`.trim().slice(0, 2000));
+  };
+
+  // Dipanggil saat koneksi Deepgram tertutup: sesudah CloseStream, atau karena internet putus.
+  const finishRecording = (d) => {
+    if (dictationRef.current !== d) return;
+    dictationRef.current = null;
+    teardownDictation(d);
+    // Kalau koneksi putus tiba-tiba, teks sementara ikut disimpan supaya tidak hilang.
+    const heard = d.stopping ? d.finalText : `${d.finalText} ${d.interimText}`.trim();
+    const full = `${d.typedText} ${heard}`.trim().slice(0, 2000);
+    setInput(full);
+    setVoiceStatus('idle');
+    setTimeout(() => micRef.current && micRef.current.focus({ preventScroll: true }), 0); // tombol mic sempat dimatikan
+
+    if (!d.stopping) {
+      showVoiceError(
+        heard
+          ? 'Sambungan ke Deepgram terputus. Teks yang sudah terdengar ada di kolom pertanyaan.'
+          : 'Sambungan ke Deepgram terputus. Periksa koneksi internet, lalu coba lagi.'
+      );
+    } else if (!d.finalText) {
+      showVoiceError('Suara tidak terdengar jelas. Dekatkan mikrofon, lalu coba lagi.');
+    } else {
+      // Hasil rekaman dikirim lewat jalur yang sama dengan pertanyaan yang diketik.
+      sendRef.current(full);
+    }
+  };
+
+  const stopRecording = () => {
+    const d = dictationRef.current;
+    if (!d || d.stopping || !d.recorder) return;
+    clearTimeout(d.timer);
+    d.stopping = true;
+    if (d.recorder.state !== 'inactive') d.recorder.stop();
+    setVoiceStatus('transcribing');
+  };
+
+  const startRecording = async () => {
+    if (dictationRef.current || busy) return;
+    const s = settingsRef.current;
+    if (!s.apiKey) {
+      toast('Isi API key dulu di Pengaturan AI.');
+      go('settings');
+      return;
+    }
+    if (!s.deepgramKey) {
+      toast('Isi API key Deepgram dulu di Pengaturan AI.');
+      go('settings');
+      return;
+    }
+
+    // Semua benda yang hidup selama merekam disimpan di satu objek.
+    const d = { socket: null, stream: null, recorder: null, timer: null, typedText: input.trim(), finalText: '', interimText: '', stopping: false, cancelled: false };
+    dictationRef.current = d;
+    setVoiceStatus('connecting');
+
+    try {
+      d.stream = await getMicrophone();
+      if (d.cancelled) throw new Error('cancelled');
+      d.socket = await openDeepgramSocket(s.deepgramKey);
+      if (d.cancelled) throw new Error('cancelled');
+
+      const mime = pickRecorderMime();
+      const recorder = mime ? new MediaRecorder(d.stream, { mimeType: mime }) : new MediaRecorder(d.stream);
+      d.recorder = recorder;
+      d.socket.addEventListener('message', (event) => handleDictationMessage(d, event));
+      d.socket.addEventListener('close', () => finishRecording(d));
+      recorder.addEventListener('dataavailable', (event) => {
+        if (event.data.size > 0 && d.socket.readyState === WebSocket.OPEN) d.socket.send(event.data);
+      });
+      recorder.addEventListener('stop', () => {
+        d.stream.getTracks().forEach((track) => track.stop()); // mematikan mikrofon
+        // CloseStream: Deepgram mengirim sisa teks yang belum final, lalu menutup koneksi.
+        if (d.socket.readyState === WebSocket.OPEN) d.socket.send(JSON.stringify({ type: 'CloseStream' }));
+        setTimeout(() => d.socket.close(), 5000); // cadangan kalau Deepgram tidak menutup sendiri
+      });
+      recorder.start(250); // potongan audio dikirim ke Deepgram setiap 250 milidetik
+      // Rekaman berhenti sendiri setelah batas waktu, supaya mikrofon tidak lupa dimatikan.
+      d.timer = setTimeout(stopRecording, MAX_RECORDING_SECONDS * 1000);
+      setVoiceStatus('recording');
+    } catch (e) {
+      teardownDictation(d);
+      if (dictationRef.current === d) dictationRef.current = null;
+      if (!d.cancelled) {
+        setVoiceStatus('idle');
+        showVoiceError((e && e.message) || 'Tidak bisa memulai rekaman suara.');
+      }
+    }
+  };
+
+  const onMicClick = () => {
+    if (voiceStatus === 'recording') stopRecording();
+    else if (voiceStatus === 'idle') startRecording();
+  };
+
   const newChat = () => {
+    cancelRecording();
     if (abortRef.current) abortRef.current.abort();
     setChat([]);
     showPose(settings.apiKey ? 'ask' : 'alert');
@@ -340,7 +494,7 @@ export default function Page() {
   };
 
   const resetDefaults = () => {
-    const s = { ...DEFAULTS, apiKey: settings.apiKey };
+    const s = { ...DEFAULTS, apiKey: settings.apiKey, deepgramKey: settings.deepgramKey };
     setSettings(s);
     setDraft(s);
     setTest({ text: 'Pengaturan dikembalikan ke default (API key dipertahankan).', ok: null, running: false });
@@ -352,7 +506,16 @@ export default function Page() {
   const txs = TXS.filter((t) => txFilter === 'all' || t.dir === txFilter);
   const contextSize = buildContext(draft.contextText, documents).length;
   const contextOver = contextSize > MAX_CONTEXT;
-  const statusText = !ready
+  const voiceBusy = voiceStatus !== 'idle';
+  const VOICE_STATUS_TEXT = {
+    connecting: 'Menghubungkan ke Deepgram…',
+    recording: 'Mendengarkan… ketuk tombol mic lagi untuk berhenti',
+    transcribing: 'Menunggu teks terakhir dari Deepgram…'
+  };
+  const MIC_LABEL = { idle: 'Rekam suara', connecting: 'Menghubungkan mikrofon', recording: 'Berhenti merekam', transcribing: 'Menunggu teks terakhir' };
+  const statusText = voiceBusy
+    ? VOICE_STATUS_TEXT[voiceStatus]
+    : !ready
     ? 'Memuat…'
     : connected
     ? 'Online · Asisten virtual Agent Nusa'
@@ -452,7 +615,7 @@ export default function Page() {
           <div className="composer-wrap">
             <div className="chips">
               {CHIPS.map(([label, text]) => (
-                <button key={label} type="button" className="chip" disabled={busy} onClick={() => send(text)}>
+                <button key={label} type="button" className="chip" disabled={busy || voiceBusy} onClick={() => send(text)}>
                   {label}
                 </button>
               ))}
@@ -473,6 +636,7 @@ export default function Page() {
                 maxLength={2000}
                 placeholder="Tulis pertanyaan Anda di sini"
                 value={input}
+                readOnly={voiceBusy}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -486,7 +650,18 @@ export default function Page() {
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
                 </button>
               )}
-              <button type="submit" className="send" aria-label="Kirim pesan" disabled={busy}>
+              <button
+                ref={micRef}
+                type="button"
+                id="btn-mic"
+                className={'icon-btn mic' + (voiceStatus === 'recording' ? ' rec' : '')}
+                aria-label={MIC_LABEL[voiceStatus]}
+                disabled={busy || voiceStatus === 'connecting' || voiceStatus === 'transcribing'}
+                onClick={onMicClick}
+              >
+                {voiceStatus === 'recording' ? <StopIcon /> : <MicIcon />}
+              </button>
+              <button type="submit" className="send" aria-label="Kirim pesan" disabled={busy || voiceBusy}>
                 <SendIcon />
               </button>
             </form>
@@ -567,6 +742,26 @@ export default function Page() {
                     </button>
                   </div>
                   <small>Key tersimpan di browser Anda dan dikirim lewat server aplikasi ini ke API Netra. Jangan bagikan layar ini saat key terlihat.</small>
+                </div>
+
+                <div className="field">
+                  <label htmlFor="deepgramKey"><span>API key Deepgram (input suara)</span></label>
+                  <div className="with-btn">
+                    <input
+                      id="deepgramKey"
+                      type={showDgKey ? 'text' : 'password'}
+                      placeholder="Tempel API key Deepgram di sini"
+                      spellCheck={false}
+                      autoCapitalize="off"
+                      autoComplete="off"
+                      value={draft.deepgramKey}
+                      onChange={upd('deepgramKey')}
+                    />
+                    <button type="button" className="btn ghost" aria-pressed={showDgKey} onClick={() => setShowDgKey((v) => !v)}>
+                      {showDgKey ? 'Sembunyikan' : 'Tampilkan'}
+                    </button>
+                  </div>
+                  <small>Dipakai untuk tombol mic di chat. Key tersimpan di browser ini dan dikirim langsung ke Deepgram, tidak lewat server aplikasi. Mikrofon hanya bisa dipakai di https:// atau localhost.</small>
                 </div>
 
                 <div className="field">
