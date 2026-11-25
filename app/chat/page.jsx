@@ -168,21 +168,25 @@ export default function Page() {
     setSettings(s);
     setDraft(s);
     loadFinance().catch(() => toast('Data rekening gagal dimuat.'));
+    // StrictMode memasang efek dua kali: pemasangan pertama yang sudah dibongkar tidak boleh membuat sesi.
+    let cancelled = false;
     (async () => {
       try {
         const list = await listSessions();
+        if (cancelled) return;
         setSessions(list);
         const last = readLS(LS_SESSION, null);
         const pick = list.find((x) => x.id === last) || list[0];
         if (pick) await openSession(pick.id);
         else await startNewSession();
       } catch (e) {
-        toast((e && e.message) || 'Percakapan gagal dimuat.');
+        if (!cancelled) toast((e && e.message) || 'Percakapan gagal dimuat.');
       } finally {
-        setReady(true);
+        if (!cancelled) setReady(true);
       }
     })();
     return () => {
+      cancelled = true;
       clearTimeout(poseTimer.current);
       clearTimeout(toastTimer.current);
       clearTimeout(errTimer.current);
@@ -241,11 +245,12 @@ export default function Page() {
   /* ---------- data dari database ---------- */
   const loadFinance = async () => {
     const supabase = createClient();
-    const [{ data: saldo }, { data: tx }, { data: profile }] = await Promise.all([
+    const [{ data: saldo, error: e1 }, { data: tx, error: e2 }, { data: profile, error: e3 }] = await Promise.all([
       supabase.from('v_saldo_total').select('nomor_akhir, saldo_total').maybeSingle(),
       supabase.from('transactions').select('id, arah, nominal, pihak, kanal, status, waktu').order('waktu', { ascending: false }).limit(30),
       supabase.from('profiles').select('nama_panggilan').maybeSingle()
     ]);
+    if (e1 || e2 || e3) throw new Error('Data rekening gagal dimuat.');
     if (saldo) setAccount({ ...saldo, nama: (profile && profile.nama_panggilan) || 'Nasabah' });
     setTxRows((tx || []).map(toTxRow));
   };
@@ -731,13 +736,17 @@ export default function Page() {
     e.preventDefault();
     const s = normalizeSettings(draft);
     if (s.contextText) {
-      if (!sessionRef.current) {
+      const sid = sessionRef.current;
+      if (!sid) {
         toast('Percakapan belum siap, coba lagi sebentar.');
         return;
       }
       try {
-        await addAttachment(sessionRef.current, 'Catatan teks', s.contextText);
-        setDocuments((docs) => [...docs, { id: newId(), name: 'Catatan teks', chars: Math.min(s.contextText.length, MAX_CONTEXT) }]);
+        await addAttachment(sid, 'Catatan teks', s.contextText);
+        // Sesi bisa sudah berganti selama menunggu: jangan tampilkan lampiran di sesi lain.
+        if (sessionRef.current === sid) {
+          setDocuments((docs) => [...docs, { id: newId(), name: 'Catatan teks', chars: Math.min(s.contextText.length, MAX_CONTEXT) }]);
+        }
       } catch (err) {
         toast((err && err.message) || 'Catatan gagal ditempel.');
         return;
@@ -787,7 +796,7 @@ export default function Page() {
       }
     }
 
-    if (added.length) setDocuments((docs) => [...docs, ...added]);
+    if (added.length && sessionRef.current === sid) setDocuments((docs) => [...docs, ...added]);
     const parts = [];
     if (added.length) parts.push(`${added.length} PDF ditempel ke percakapan ini.`);
     if (failed.length) parts.push(`Gagal: ${failed.join(', ')}.`);

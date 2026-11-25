@@ -133,6 +133,7 @@ Mode suara dan telepon (`CALL_RULES`) memakai jalur yang sama. `CALL_RULES` dita
 - **Key Deepgram** masih di browser, karena WebSocket speech-to-text dibuka langsung dari browser. Halaman "Pengaturan AI" diperkecil menjadi "Pengaturan" (suara dan lampiran).
 - Balasan agent disimpan tanpa di-trim.
 - Klien menganggap satu giliran selesai saat stream ditutup server (bukan saat `[DONE]`), karena server baru menutup stream setelah balasan agent tersimpan. Ini menjaga urutan riwayat = urutan percakapan.
+- Begitu pesan Nasabah disimpan, server langsung menyisipkan baris balasan agent kosong sebagai penanda urutan, lalu mengisinya setelah stream selesai (atau menghapus keduanya bila gagal/kosong). Baris kosong tidak pernah ikut ke prompt maupun ke tampilan.
 
 ## 8. Skema database (Supabase / Postgres)
 

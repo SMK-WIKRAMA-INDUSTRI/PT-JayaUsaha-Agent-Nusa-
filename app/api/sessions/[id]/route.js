@@ -13,5 +13,6 @@ export async function GET(_req, { params }) {
   if (!session) return fail(404, 'Percakapan tidak ditemukan.');
   const { data, error } = await supabase.from('chat_messages').select('id, role, content, created_at').eq('session_id', id).order('id');
   if (error) return fail(500, error.message);
-  return Response.json({ messages: data });
+  // Baris balasan kosong = penanda urutan untuk balasan yang masih di-stream; jangan tampilkan.
+  return Response.json({ messages: data.filter((m) => !(m.role === 'assistant' && m.content === '')) });
 }
