@@ -5,7 +5,6 @@ import Link from 'next/link';
 import { createClient } from '../../lib/supabase/browser';
 import '../auth.css';
 
-// Hanya path internal yang boleh dipakai sebagai tujuan setelah login.
 // Hanya path di situs ini yang boleh dipakai sebagai tujuan setelah login.
 const safeNext = (v) => {
   if (!v) return '/chat';

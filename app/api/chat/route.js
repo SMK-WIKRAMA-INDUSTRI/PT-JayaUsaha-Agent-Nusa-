@@ -146,8 +146,14 @@ export async function POST(req) {
       } finally {
         if (text.trim() && !gotError) {
           // Disimpan apa adanya (tanpa trim): prefix permintaan berikutnya harus sama dengan output model.
-          await admin.from('chat_messages').update({ content: text, usage }).eq('id', placeholder.id);
-          await admin.from('chat_sessions').update({ updated_at: new Date().toISOString() }).eq('id', sessionId);
+          const { error: saveErr } = await admin.from('chat_messages').update({ content: text, usage }).eq('id', placeholder.id);
+          if (saveErr) {
+            // Balasan gagal disimpan: buang giliran ini supaya riwayat tidak berisi pesan Nasabah tanpa balasan.
+            console.error('[api/chat] gagal menyimpan balasan:', saveErr.message);
+            await dropTurn();
+          } else {
+            await admin.from('chat_sessions').update({ updated_at: new Date().toISOString() }).eq('id', sessionId);
+          }
         } else {
           // Balasan kosong atau error di tengah stream: buang giliran ini seluruhnya, jangan simpan teks setengah jadi.
           await dropTurn();

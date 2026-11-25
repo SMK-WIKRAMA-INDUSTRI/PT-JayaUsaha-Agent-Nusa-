@@ -64,7 +64,7 @@ public/assets/          pose maskot Bantu
 
 ## Menjalankan di komputer
 
-Butuh Node.js 18.18 atau lebih baru.
+Butuh Node.js 20.6 atau lebih baru (script `--env-file` membutuhkannya).
 
 ```bash
 git clone <URL-REPO-ANDA>
@@ -118,7 +118,7 @@ Atau lewat CLI: jalankan `npx vercel` di folder proyek.
 - Browser hanya mengirim `session_id` dan pesan baru. Server menyusun prompt dengan urutan tetap (system prompt statis → Snapshot Keuangan sesi → riwayat) supaya context caching DeepSeek bisa kena. Lihat `docs/adr/0003-*`.
 - Setiap balasan menyimpan `usage` dari API (termasuk token cache hit) di tabel `chat_messages`.
 - Alamat API dikunci di server (bukan dari klien), sehingga endpoint tidak bisa dipakai untuk menembak alamat lain.
-- Batas durasi fungsi serverless diset 60 detik. Jawaban sangat panjang dengan reasoning tinggi bisa terpotong; turunkan Max tokens atau matikan Reasoning.
+- Batas durasi fungsi serverless diset 60 detik. Server memakai `max_tokens` 600 dan reasoning dimatikan (`app/api/chat/route.js`) supaya jawaban selesai dalam batas itu.
 - Tombol **Chat baru** membuka Sesi Percakapan baru; sesi lama tetap tersimpan dan bisa dilanjutkan.
 - Tombol **Hubungi agen** masih simulasi dan belum terhubung ke contact center.
 
