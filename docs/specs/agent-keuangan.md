@@ -58,6 +58,8 @@ Konsekuensinya bagi kita:
 - Setiap balasan mencatat `usage` dari API, termasuk `prompt_cache_hit_tokens` dan `prompt_cache_miss_tokens` jika tersedia, untuk membuktikan cache benar-benar kena.
 - **Risiko yang harus diverifikasi lebih dulu:** apakah proxy Netra Runtime meneruskan caching ke DeepSeek dan mengembalikan field cache tersebut. Jika tidak, fitur tetap berjalan, hanya tanpa penghematan biaya.
 
+> Hasil verifikasi lewat Netra: **belum dijalankan** (menunggu `NETRA_API_KEY`). Jalankan `node --env-file=.env.local scripts/cek-cache-netra.mjs` dan catat hasilnya di sini.
+
 ## 5. Alur utama
 
 ### 5.1 Register dan onboarding
@@ -123,6 +125,15 @@ Perubahan di tengah sesi, misalnya Rencana diterapkan atau Gaji baru masuk, dita
 Mode suara dan telepon (`CALL_RULES`) memakai jalur yang sama. `CALL_RULES` ditambahkan sebagai pesan `system` setelah snapshot, sehingga prefix sistem dan snapshot tetap sama dengan sesi teks.
 `chat_sessions.system_prompt_version` mencatat versi prompt yang dipakai. Jika versinya berubah, sesi lama tetap memakai versinya sendiri agar prefix-nya tidak berubah.
 
+### 7.1 Keputusan pelaksanaan Tahap 1
+
+- **Lampiran** (isi PDF dan catatan teks) ditempel ke Sesi Percakapan sebagai pesan `role = 'lampiran'` di akhir riwayat, lalu dirender sebagai pesan `system` "LAMPIRAN DARI NASABAH". Lampiran tidak bisa dilepas karena akan mengubah prefix.
+- **Riwayat tidak dipotong.** Prompt lebih dari 400.000 karakter ditolak (413) dengan saran memulai Chat baru.
+- **Cap waktu** pesan Nasabah diambil dari `chat_messages.created_at`.
+- **Key Deepgram** masih di browser, karena WebSocket speech-to-text dibuka langsung dari browser. Halaman "Pengaturan AI" diperkecil menjadi "Pengaturan" (suara dan lampiran).
+- Balasan agent disimpan tanpa di-trim.
+- Klien menganggap satu giliran selesai saat stream ditutup server (bukan saat `[DONE]`), karena server baru menutup stream setelah balasan agent tersimpan. Ini menjaga urutan riwayat = urutan percakapan.
+
 ## 8. Skema database (Supabase / Postgres)
 
 Semua nominal bertipe `bigint` dalam rupiah. Semua tabel milik Nasabah memiliki `user_id uuid references auth.users` dan policy RLS `select using (user_id = auth.uid())`.
@@ -142,7 +153,7 @@ Semua nominal bertipe `bigint` dalam rupiah. Semua tabel milik Nasabah memiliki 
 | `product_offers` | `id`, `user_id`, `product_id`, `session_id`, `momen` (`ditanya`/`rencana_investasi`/`dana_darurat_penuh`), `status` (`ditampilkan`/`diklik`/`tertarik`), `created_at` | Batas mingguan dihitung dari tabel ini |
 | `leads` | `id`, `offer_id` UNIQUE, `user_id`, `institution_id`, `persetujuan_at`, `data_dibagikan` jsonb | Belum dikirim ke mana pun |
 | `chat_sessions` | `id`, `user_id`, `snapshot` jsonb, `system_prompt_version`, `dimulai_oleh` (`agent`/`nasabah`), `plan_id` (boleh kosong), `created_at` | |
-| `chat_messages` | `id`, `session_id`, `user_id`, `role`, `content`, `card` jsonb (boleh kosong), `usage` jsonb (boleh kosong), `created_at` | |
+| `chat_messages` | `id`, `session_id`, `user_id`, `role` (`user`/`assistant`/`lampiran`/`pembaruan`), `content`, `card` jsonb (boleh kosong), `usage` jsonb (boleh kosong), `created_at` | |
 | `notifications` | `id`, `user_id`, `jenis` (`gajian`), `ref_id`, `dibaca_at` | Realtime aktif |
 
 View untuk saldo: `v_saldo_total` (SUM `transactions` berstatus berhasil), `v_saldo_kantong` (SUM `pocket_movements` per Kantong), dan `v_saldo_bebas` (Saldo Total dikurangi SUM semua Kantong).

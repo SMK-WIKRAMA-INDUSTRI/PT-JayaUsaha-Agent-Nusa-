@@ -90,6 +90,10 @@ _Avoid_: prospek, konversi
 Satu rangkaian chat antara Nasabah dan agent. Sesi menyimpan semua pesan dan Snapshot Keuangan saat sesi dibuat, sehingga bisa dilanjutkan dengan awal prompt yang sama persis.
 _Avoid_: chat history, cache, session cache
 
+**Lampiran**:
+Dokumen atau catatan teks yang ditempel Nasabah ke satu Sesi Percakapan sebagai bahan jawaban agent. Lampiran tidak bisa dilepas lagi dari sesinya.
+_Avoid_: konteks tambahan, context, dokumen
+
 **Notifikasi Gajian**:
 Pemberitahuan di aplikasi saat Gaji masuk. Jika dibuka, notifikasi ini memulai Sesi Percakapan baru yang dimulai oleh agent dan langsung membawa Rencana Alokasi.
 _Avoid_: push, reminder
