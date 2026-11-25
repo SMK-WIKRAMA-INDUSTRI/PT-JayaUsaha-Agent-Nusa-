@@ -23,17 +23,24 @@ export async function middleware(request) {
   } = await supabase.auth.getUser();
   const path = request.nextUrl.pathname;
 
+  // Redirect yang tetap membawa cookie sesi yang baru di-refresh.
+  const redirectTo = (url) => {
+    const r = NextResponse.redirect(url);
+    response.cookies.getAll().forEach((c) => r.cookies.set(c));
+    return r;
+  };
+
   if (!user && (path.startsWith('/chat') || path.startsWith('/onboarding'))) {
     const url = request.nextUrl.clone();
     url.pathname = '/login';
     url.search = `?next=${encodeURIComponent(path)}`;
-    return NextResponse.redirect(url);
+    return redirectTo(url);
   }
   if (user && (path === '/login' || path === '/register')) {
     const url = request.nextUrl.clone();
     url.pathname = '/chat';
     url.search = '';
-    return NextResponse.redirect(url);
+    return redirectTo(url);
   }
   return response;
 }

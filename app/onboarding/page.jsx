@@ -7,7 +7,13 @@ import { rp } from '../../lib/format';
 import '../auth.css';
 
 const LANGKAH = ['Profil', 'Pengeluaran Bulanan', 'Profil Risiko', 'Goal pertama'];
-const angka = (v) => Number(String(v).replace(/\D/g, ''));
+// "Rp 1.500.000" / "1500000" -> 1500000. Desimal, minus, atau tanpa angka -> null.
+const angka = (v) => {
+  const s = String(v).replace(/^\s*Rp\s*/i, '').replace(/[.\s]/g, '');
+  if (!/^\d+$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isSafeInteger(n) ? n : null;
+};
 
 export default function OnboardingPage() {
   const [step, setStep] = useState(0);
@@ -51,8 +57,9 @@ export default function OnboardingPage() {
       setBusy(false);
     }
   };
-  const cek = ({ error }) => {
+  const cek = ({ data, error }) => {
     if (error) throw new Error(error.message);
+    if (Array.isArray(data) && data.length === 0) throw new Error('Profil tidak ditemukan. Silakan keluar lalu masuk lagi.');
   };
 
   const lanjutProfil = async (e) => {
@@ -62,27 +69,27 @@ export default function OnboardingPage() {
     if (!nama) return setErr('Nama panggilan wajib diisi.');
     if (!Number.isInteger(tgl) || tgl < 1 || tgl > 31) return setErr('Tanggal gajian harus angka 1 sampai 31.');
     const ok = await simpan(async (s, uid) =>
-      cek(await s.from('profiles').update({ nama_panggilan: nama, pekerjaan: profil.pekerjaan.trim() || null, tanggal_gajian: tgl }).eq('user_id', uid))
+      cek(await s.from('profiles').update({ nama_panggilan: nama, pekerjaan: profil.pekerjaan.trim() || null, tanggal_gajian: tgl }).eq('user_id', uid).select('user_id'))
     );
     if (ok) setStep(1);
   };
 
   const lanjutPengeluaran = async (e) => {
     e.preventDefault();
-    if (!String(pengeluaran).trim()) return setErr('Isi Pengeluaran Bulanan dengan angka rupiah.');
     const n = angka(pengeluaran);
+    if (n === null) return setErr('Isi Pengeluaran Bulanan dengan angka rupiah tanpa desimal, misalnya 9.000.000.');
     const koreksi = n === otomatis ? null : n; // sama dengan hitungan otomatis: jangan disimpan sebagai koreksi
-    const ok = await simpan(async (s, uid) => cek(await s.from('profiles').update({ pengeluaran_bulanan_koreksi: koreksi }).eq('user_id', uid)));
+    const ok = await simpan(async (s, uid) => cek(await s.from('profiles').update({ pengeluaran_bulanan_koreksi: koreksi }).eq('user_id', uid).select('user_id')));
     if (ok) setStep(2);
   };
 
   const selesai = async (denganGoal) => {
     const nama = goal.nama.trim();
     const target = angka(goal.target);
-    if (denganGoal && (!nama || !target)) return setErr('Isi nama dan target Goal, atau pilih Lewati.');
+    if (denganGoal && (!nama || target === null || target <= 0)) return setErr('Isi nama dan target Goal, atau pilih Lewati.');
     const ok = await simpan(async (s, uid) => {
       if (denganGoal) cek(await s.from('goals').insert({ user_id: uid, nama, target, tenggat: goal.tenggat || null }));
-      cek(await s.from('profiles').update({ onboarding_selesai_at: new Date().toISOString() }).eq('user_id', uid));
+      cek(await s.from('profiles').update({ onboarding_selesai_at: new Date().toISOString() }).eq('user_id', uid).select('user_id'));
     });
     if (ok) window.location.href = '/chat';
   };

@@ -1279,7 +1279,16 @@ import { createClient } from '../../lib/supabase/browser';
 import '../auth.css';
 
 // Hanya path internal yang boleh dipakai sebagai tujuan setelah login.
-const safeNext = (v) => (v && v.startsWith('/') && !v.startsWith('//') ? v : '/chat');
+// Hanya path di situs ini yang boleh dipakai sebagai tujuan setelah login.
+const safeNext = (v) => {
+  if (!v) return '/chat';
+  try {
+    const u = new URL(v, window.location.origin);
+    return u.origin === window.location.origin ? u.pathname + u.search + u.hash : '/chat';
+  } catch {
+    return '/chat';
+  }
+};
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
