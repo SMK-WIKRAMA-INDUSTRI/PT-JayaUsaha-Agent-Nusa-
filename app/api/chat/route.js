@@ -88,7 +88,17 @@ export async function POST(req) {
 
   if (!upstream.ok || !upstream.body) {
     await dropUserMsg();
-    return new Response(upstream.body, { status: upstream.status, headers: { 'Content-Type': upstream.headers.get('content-type') || 'application/json' } });
+    // Status Netra tidak diteruskan apa adanya: 401 dari Netra (key server salah) bukan berarti login Nasabah berakhir.
+    let detail = '';
+    try {
+      const j = await upstream.json();
+      detail = (j && j.error && (j.error.message || j.error)) || '';
+      if (typeof detail !== 'string') detail = JSON.stringify(detail);
+    } catch {
+      /* bukan JSON */
+    }
+    const status = upstream.status === 429 || upstream.status === 402 ? upstream.status : 502;
+    return fail(status, `API Netra menolak permintaan (HTTP ${upstream.status})${detail ? ': ' + detail : ''}.`);
   }
 
   // Teruskan stream ke browser apa adanya, sambil mengumpulkan teks dan usage untuk disimpan.
@@ -110,7 +120,8 @@ export async function POST(req) {
           }
         }
       } catch {
-        // Browser menekan "hentikan" atau koneksi putus: simpan teks yang sudah diterima.
+        // Browser menekan "hentikan" atau koneksi putus: hentikan bacaan dari Netra, simpan teks yang sudah diterima.
+        reader.cancel().catch(() => {});
       } finally {
         if (text.trim()) {
           // Disimpan apa adanya (tanpa trim): prefix permintaan berikutnya harus sama dengan output model.
