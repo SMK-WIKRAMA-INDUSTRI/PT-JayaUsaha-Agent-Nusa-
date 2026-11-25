@@ -2,12 +2,13 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { CHIPS, DEFAULTS, MAX_CONTEXT, TXS, buildContext, contextForPrompt, demoContext, normalizeSettings, rp } from '../../lib/data';
-import { callChat } from '../../lib/api';
+import { CHIPS, DEFAULTS, MAX_CONTEXT, normalizeSettings, rp } from '../../lib/data';
+import { addAttachment, callChat, createSession, getSessionMessages, listSessions } from '../../lib/api';
+import { fmtWaktu } from '../../lib/format';
+import { createClient } from '../../lib/supabase/browser';
 import { extractPdfText } from '../../lib/pdf';
 import { MAX_RECORDING_SECONDS, collectTranscript, getMicrophone, openDeepgramSocket, pickRecorderMime } from '../../lib/voice';
 import {
-  CALL_RULES,
   CHECKING_DELAY_MS,
   CHECKING_LINES,
   STILL_CHECKING_DELAY_MS,
@@ -23,9 +24,9 @@ import {
   settlesWithin
 } from '../../lib/speech';
 
-const LS_SETTINGS = 'nusa.settings.v1';
-const LS_CHAT = 'nusa.chat.v1';
-const LS_DOCS = 'nusa.docs.v1';
+const LS_SETTINGS = 'nusa.settings.v2'; // hanya key Deepgram; key Netra sekarang di server
+const LS_OLD = ['nusa.settings.v1', 'nusa.chat.v1', 'nusa.docs.v1']; // data versi lama, dihapus saat halaman dibuka
+const LS_SESSION = 'nusa.session.v1'; // id Sesi Percakapan terakhir yang dibuka
 const MAX_PDF_BYTES = 20 * 1024 * 1024;
 const fmtNum = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
 const POSES = { ask: 'ask', think: 'think', work: 'laptop', ok: 'ok', err: 'bow', alert: 'announce' };
@@ -46,14 +47,25 @@ const writeLS = (k, v) => {
     /* penyimpanan penuh atau diblokir */
   }
 };
-const sendable = (m) => !m.err && !m.skip && !m.pending && m.content;
 const fmtClock = (sec) => `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
 // Teks bot yang sedang dibacakan: hanya bagian yang sudah diucapkan yang tampil.
 const visibleText = (m) => (typeof m.shown === 'number' ? m.content.slice(0, m.shown) : m.content);
-const buildSystemPrompt = (s, documents) => {
-  const extra = contextForPrompt(s.contextText, documents);
-  return s.systemPrompt + '\n\n' + demoContext() + (extra ? '\n\n' + extra : '');
-};
+// Pesan dari database -> gelembung chat. Lampiran tidak ditampilkan sebagai gelembung.
+const toChat = (rows) => rows.filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => ({ id: 'db' + m.id, role: m.role, content: m.content }));
+// Nama file dari isi lampiran "[Dokumen: nama]\n...".
+const lampiranName = (content) => content.split('\n')[0].replace(/^\[Dokumen: /, '').replace(/\]$/, '');
+// Transaksi dari database -> baris panel riwayat.
+const toTxRow = (t) => ({
+  id: t.id,
+  ini: t.pihak.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join(''),
+  name: t.pihak,
+  waktu: fmtWaktu(t.waktu),
+  channel: t.kanal,
+  amt: Number(t.nominal),
+  dir: t.arah === 'masuk' ? 'in' : 'out',
+  st: t.status === 'berhasil' ? 'ok' : t.status === 'gagal' ? 'fail' : 'wait',
+  status: t.status === 'berhasil' ? 'Berhasil' : t.status === 'gagal' ? 'Gagal' : 'Diproses'
+});
 
 // Melepas semua benda yang hidup selama merekam: timer, perekam, mikrofon, dan WebSocket.
 function teardownDictation(d) {
@@ -109,20 +121,22 @@ export default function Page() {
   const [pose, setPose] = useState('alert');
   const [statusErr, setStatusErr] = useState(false);
   const [txFilter, setTxFilter] = useState('all');
-  const [showKey, setShowKey] = useState(false);
   const [showDgKey, setShowDgKey] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState('idle'); // 'idle' | 'connecting' | 'recording' | 'transcribing'
   const [callStatus, setCallStatusState] = useState('off'); // 'off' | 'connecting' | 'listening' | 'thinking' | 'speaking'
   const [callTranscript, setCallTranscript] = useState('');
   const [callSeconds, setCallSeconds] = useState(0);
-  const [test, setTest] = useState({ text: '', ok: null, running: false });
+  const [sessionId, setSessionId] = useState(null);
+  const [sessions, setSessions] = useState([]); // { id, created_at, updated_at, dimulai_oleh }
+  const [account, setAccount] = useState(null); // { nomor_akhir, saldo_total, nama }
+  const [txRows, setTxRows] = useState([]);
   const [toastMsg, setToastMsg] = useState('');
-  const [documents, setDocuments] = useState([]); // { id, name, pages, text }
+  const [documents, setDocuments] = useState([]); // lampiran sesi ini: { id, name, chars }
   const [pdfStatus, setPdfStatus] = useState({ text: '', ok: null, reading: false });
 
   const chatRef = useRef([]);
   const settingsRef = useRef(DEFAULTS);
-  const documentsRef = useRef([]);
+  const sessionRef = useRef(null);
   const abortRef = useRef(null);
   const poseTimer = useRef(null);
   const toastTimer = useRef(null);
@@ -138,31 +152,36 @@ export default function Page() {
 
   chatRef.current = chat;
   settingsRef.current = settings;
-  documentsRef.current = documents;
+  sessionRef.current = sessionId;
 
   /* ---------- muat & simpan ---------- */
   useEffect(() => {
-    const s = { ...DEFAULTS, ...readLS(LS_SETTINGS, {}) };
-    const saved = readLS(LS_CHAT, []);
-    const savedDocs = readLS(LS_DOCS, []);
+    const old = readLS('nusa.settings.v1', {});
+    const s = { ...DEFAULTS, ...(old.deepgramKey ? { deepgramKey: old.deepgramKey } : {}), ...readLS(LS_SETTINGS, {}) };
+    LS_OLD.forEach((k) => {
+      try {
+        localStorage.removeItem(k); // termasuk key Netra lama yang dulu disimpan di browser
+      } catch {
+        /* penyimpanan diblokir */
+      }
+    });
     setSettings(s);
     setDraft(s);
-    setDocuments(
-      Array.isArray(savedDocs)
-        ? savedDocs
-            .filter((d) => d && typeof d.name === 'string' && typeof d.text === 'string')
-            .map((d) => ({ id: newId(), name: d.name, pages: Number(d.pages) || 0, text: d.text }))
-        : []
-    );
-    setChat(
-      Array.isArray(saved)
-        ? saved
-            .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
-            .map((m) => ({ id: newId(), role: m.role, content: m.content }))
-        : []
-    );
-    setView(s.apiKey ? 'chat' : 'settings');
-    setReady(true);
+    loadFinance().catch(() => toast('Data rekening gagal dimuat.'));
+    (async () => {
+      try {
+        const list = await listSessions();
+        setSessions(list);
+        const last = readLS(LS_SESSION, null);
+        const pick = list.find((x) => x.id === last) || list[0];
+        if (pick) await openSession(pick.id);
+        else await startNewSession();
+      } catch (e) {
+        toast((e && e.message) || 'Percakapan gagal dimuat.');
+      } finally {
+        setReady(true);
+      }
+    })();
     return () => {
       clearTimeout(poseTimer.current);
       clearTimeout(toastTimer.current);
@@ -184,22 +203,14 @@ export default function Page() {
   }, [ready, settings]);
 
   useEffect(() => {
-    if (ready && !busy && callStatus === 'off') writeLS(LS_CHAT, chat.filter(sendable).map(({ role, content }) => ({ role, content })));
-  }, [ready, busy, callStatus, chat]);
-
-  useEffect(() => {
-    if (ready) writeLS(LS_DOCS, documents.map(({ name, pages, text }) => ({ name, pages, text })));
-  }, [ready, documents]);
-
-  useEffect(() => {
     clearTimeout(poseTimer.current);
-    setPose(settings.apiKey ? 'ask' : 'alert');
-  }, [settings.apiKey]);
+    setPose(sessionId ? 'ask' : 'alert');
+  }, [sessionId]);
 
   useEffect(() => {
     const el = messagesRef.current;
     if (view === 'chat' && el) el.scrollTop = el.scrollHeight;
-  }, [chat, view, settings.apiKey]);
+  }, [chat, view, sessionId]);
 
   useEffect(() => {
     const el = inputRef.current;
@@ -214,7 +225,7 @@ export default function Page() {
     clearTimeout(poseTimer.current);
     setPose(p);
     if (back) {
-      poseTimer.current = setTimeout(() => setPose(settingsRef.current.apiKey ? 'ask' : 'alert'), back);
+      poseTimer.current = setTimeout(() => setPose(sessionRef.current ? 'ask' : 'alert'), back);
     }
   };
   const toast = (msg) => {
@@ -227,25 +238,59 @@ export default function Page() {
     if (v === 'chat') setTimeout(() => inputRef.current && inputRef.current.focus({ preventScroll: true }), 0);
   };
 
+  /* ---------- data dari database ---------- */
+  const loadFinance = async () => {
+    const supabase = createClient();
+    const [{ data: saldo }, { data: tx }, { data: profile }] = await Promise.all([
+      supabase.from('v_saldo_total').select('nomor_akhir, saldo_total').maybeSingle(),
+      supabase.from('transactions').select('id, arah, nominal, pihak, kanal, status, waktu').order('waktu', { ascending: false }).limit(30),
+      supabase.from('profiles').select('nama_panggilan').maybeSingle()
+    ]);
+    if (saldo) setAccount({ ...saldo, nama: (profile && profile.nama_panggilan) || 'Nasabah' });
+    setTxRows((tx || []).map(toTxRow));
+  };
+
+  const openSession = async (id) => {
+    const rows = await getSessionMessages(id);
+    setSessionId(id);
+    writeLS(LS_SESSION, id);
+    setChat(toChat(rows));
+    setDocuments(rows.filter((m) => m.role === 'lampiran').map((m) => ({ id: 'db' + m.id, name: lampiranName(m.content), chars: m.content.length })));
+  };
+
+  const startNewSession = async () => {
+    const created = await createSession();
+    setSessions((list) => [created, ...list]);
+    setSessionId(created.id);
+    writeLS(LS_SESSION, created.id);
+    setChat([]);
+    setDocuments([]);
+  };
+
+  const logout = async () => {
+    await createClient().auth.signOut();
+    try {
+      localStorage.removeItem(LS_SESSION);
+    } catch {
+      /* penyimpanan diblokir */
+    }
+    window.location.href = '/login';
+  };
+
   /* ---------- kirim pesan ---------- */
   // voice: pertanyaan berasal dari mic, jadi jawabannya juga dibacakan dengan suara.
   const send = async (raw, { voice = false } = {}) => {
     const text = (raw || '').trim();
     if (!text || busy || dictationRef.current || callRef.current) return; // saat merekam, teks masih dikumpulkan
-    const s = settingsRef.current;
-    if (!s.apiKey) {
-      toast('Isi API key dulu di Pengaturan AI.');
-      go('settings');
+    const sid = sessionRef.current;
+    if (!sid) {
+      toast('Percakapan belum siap, coba lagi sebentar.');
       return;
     }
     go('chat');
 
     const uid = newId();
     const aid = newId();
-    const history = [...chatRef.current.filter(sendable), { role: 'user', content: text }]
-      .slice(-20)
-      .map(({ role, content }) => ({ role, content }));
-    const messages = [{ role: 'system', content: buildSystemPrompt(s, documentsRef.current) }, ...history];
 
     setChat((c) => [...c, { id: uid, role: 'user', content: text }, { id: aid, role: 'assistant', content: '', pending: true }]);
     setInput('');
@@ -263,9 +308,9 @@ export default function Page() {
 
     try {
       await callChat(
-        s,
-        messages,
-        { maxTokens: Number(s.maxTokens) || 600, stream: !!s.stream, signal: ac.signal },
+        sid,
+        text,
+        { mode: 'text', signal: ac.signal },
         (d) => {
           if (!got) showPose('think');
           got += d;
@@ -273,7 +318,7 @@ export default function Page() {
           if (!voice) setChat((c) => c.map((m) => (m.id === aid ? { ...m, content: got, pending: false } : m)));
         }
       );
-      if (!got.trim()) throw new Error('Model mengembalikan jawaban kosong. Coba naikkan Max tokens atau matikan Reasoning.');
+      if (!got.trim()) throw new Error('Model mengembalikan jawaban kosong. Coba kirim ulang pertanyaan Anda.');
       if (voice) await speakReply(aid, got.trim(), ac.signal);
       showPose('ok', 2800);
     } catch (e) {
@@ -385,13 +430,12 @@ export default function Page() {
   const startRecording = async () => {
     if (dictationRef.current || callRef.current || busy) return;
     const s = settingsRef.current;
-    if (!s.apiKey) {
-      toast('Isi API key dulu di Pengaturan AI.');
-      go('settings');
+    if (!sessionRef.current) {
+      toast('Percakapan belum siap, coba lagi sebentar.');
       return;
     }
     if (!s.deepgramKey) {
-      toast('Isi API key Deepgram dulu di Pengaturan AI.');
+      toast('Isi API key Deepgram dulu di Pengaturan.');
       go('settings');
       return;
     }
@@ -531,17 +575,13 @@ export default function Page() {
     pauseListening(call);
     setCallStatus(call, 'thinking');
     setCallTranscript(question);
-    const s = settingsRef.current;
-    const history = [...chatRef.current.filter(sendable), { role: 'user', content: question }]
-      .slice(-20)
-      .map(({ role, content }) => ({ role, content }));
+    const sid = sessionRef.current;
     const uid = newId();
     call.spoken = [uid]; // pertanyaan dan kalimat jeda giliran ini, dibuang kalau jawabannya gagal
     setChat((c) => [...c, { id: uid, role: 'user', content: question }]);
 
-    const messages = [{ role: 'system', content: `${buildSystemPrompt(s, documentsRef.current)}\n\n${CALL_RULES}` }, ...history];
     let reply = '';
-    const replyPromise = callChat(s, messages, { maxTokens: Number(s.maxTokens) || 600, stream: false, signal: call.ac.signal }, (d) => {
+    const replyPromise = callChat(sid, question, { mode: 'call', signal: call.ac.signal }, (d) => {
       reply += d;
     });
     replyPromise.catch(() => {}); // ditangani di bawah
@@ -561,7 +601,7 @@ export default function Page() {
     try {
       await replyPromise;
       reply = reply.trim();
-      if (!reply) throw new Error('Model mengembalikan jawaban kosong. Coba naikkan Max tokens atau matikan Reasoning.');
+      if (!reply) throw new Error('Model mengembalikan jawaban kosong. Coba telepon lagi.');
     } catch (error) {
       if (call.ended) return;
       const failed = call.spoken;
@@ -593,13 +633,12 @@ export default function Page() {
   const startCall = async () => {
     if (callRef.current || dictationRef.current || busy) return;
     const s = settingsRef.current;
-    if (!s.apiKey) {
-      toast('Isi API key dulu di Pengaturan AI.');
-      go('settings');
+    if (!sessionRef.current) {
+      toast('Percakapan belum siap, coba lagi sebentar.');
       return;
     }
     if (!s.deepgramKey) {
-      toast('Isi API key Deepgram dulu di Pengaturan AI.');
+      toast('Isi API key Deepgram dulu di Pengaturan.');
       go('settings');
       return;
     }
@@ -661,9 +700,12 @@ export default function Page() {
     cancelRecording();
     if (callRef.current) endCall(callRef.current, '', true);
     if (abortRef.current) abortRef.current.abort();
-    setChat([]);
-    showPose(settings.apiKey ? 'ask' : 'alert');
-    toast('Percakapan baru dimulai.');
+    startNewSession()
+      .then(() => {
+        showPose('ask');
+        toast('Percakapan baru dimulai.');
+      })
+      .catch((e) => toast((e && e.message) || 'Gagal membuat percakapan baru.'));
   };
 
   const callAgent = () => {
@@ -685,46 +727,38 @@ export default function Page() {
     setDraft((d) => ({ ...d, [k]: v }));
   };
 
-  const saveSettings = (e) => {
+  const saveSettings = async (e) => {
     e.preventDefault();
     const s = normalizeSettings(draft);
-    setSettings(s);
-    setDraft(s);
-    setTest({ text: 'Tersimpan.', ok: true, running: false });
+    if (s.contextText) {
+      if (!sessionRef.current) {
+        toast('Percakapan belum siap, coba lagi sebentar.');
+        return;
+      }
+      try {
+        await addAttachment(sessionRef.current, 'Catatan teks', s.contextText);
+        setDocuments((docs) => [...docs, { id: newId(), name: 'Catatan teks', chars: Math.min(s.contextText.length, MAX_CONTEXT) }]);
+      } catch (err) {
+        toast((err && err.message) || 'Catatan gagal ditempel.');
+        return;
+      }
+    }
+    const next = { ...s, contextText: '' };
+    setSettings(next);
+    setDraft(next);
     toast('Pengaturan tersimpan.');
   };
 
-  const runTest = async () => {
-    const s = normalizeSettings(draft);
-    setTest({ text: 'Menguji koneksi…', ok: null, running: true });
-    try {
-      const t0 = performance.now();
-      let got = '';
-      await callChat(s, [{ role: 'user', content: 'Balas dengan satu kata saja: siap' }], { maxTokens: 32, stream: false }, (d) => {
-        got += d;
-      });
-      const ms = Math.round(performance.now() - t0);
-      setTest({
-        text: `Berhasil (${ms} ms). Jawaban model: "${got.trim().slice(0, 80) || '(kosong)'}". Jangan lupa klik Simpan pengaturan.`,
-        ok: true,
-        running: false
-      });
-    } catch (e) {
-      setTest({ text: (e && e.message) || 'Gagal menguji koneksi.', ok: false, running: false });
-    }
-  };
-
-  const clearKey = () => {
-    setSettings((s) => ({ ...s, apiKey: '' }));
-    setDraft((d) => ({ ...d, apiKey: '' }));
-    setTest({ text: 'API key dihapus dari browser ini.', ok: null, running: false });
-  };
-
-  /* ---------- dokumen PDF ---------- */
+  /* ---------- dokumen PDF (ditempel ke sesi yang sedang dibuka) ---------- */
   const onPdfChange = async (e) => {
     const files = Array.from(e.target.files || []);
     e.target.value = ''; // supaya file yang sama bisa dipilih lagi
     if (!files.length) return;
+    const sid = sessionRef.current;
+    if (!sid) {
+      setPdfStatus({ text: 'Percakapan belum siap, coba lagi sebentar.', ok: false, reading: false });
+      return;
+    }
 
     setPdfStatus({ text: `Membaca ${files.length} PDF…`, ok: null, reading: true });
     const added = [];
@@ -740,23 +774,22 @@ export default function Page() {
         continue;
       }
       try {
-        const { pages, text } = await extractPdfText(file);
+        const { text } = await extractPdfText(file);
         if (!text) {
           failed.push(`${file.name} (tidak ada teks, mungkin hasil scan)`);
           continue;
         }
-        added.push({ id: newId(), name: file.name, pages, text });
+        await addAttachment(sid, file.name, text);
+        added.push({ id: newId(), name: file.name, chars: Math.min(text.length, MAX_CONTEXT) });
       } catch (err) {
-        const msg = err && err.name === 'PasswordException' ? 'dilindungi password' : 'gagal dibaca';
+        const msg = err && err.name === 'PasswordException' ? 'dilindungi password' : (err && err.message) || 'gagal dibaca';
         failed.push(`${file.name} (${msg})`);
       }
     }
 
-    if (added.length) {
-      setDocuments((docs) => [...docs.filter((d) => !added.some((a) => a.name === d.name)), ...added]);
-    }
+    if (added.length) setDocuments((docs) => [...docs, ...added]);
     const parts = [];
-    if (added.length) parts.push(`${added.length} PDF berhasil dibaca.`);
+    if (added.length) parts.push(`${added.length} PDF ditempel ke percakapan ini.`);
     if (failed.length) parts.push(`Gagal: ${failed.join(', ')}.`);
     if (!added.length && failed.length && failed.length === files.length && !navigator.onLine) {
       parts.push('Periksa koneksi internet, pembaca PDF perlu diunduh saat pertama kali.');
@@ -764,24 +797,11 @@ export default function Page() {
     setPdfStatus({ text: parts.join(' '), ok: failed.length ? (added.length ? null : false) : true, reading: false });
   };
 
-  const removeDoc = (id) => {
-    const doc = documents.find((d) => d.id === id);
-    setDocuments((docs) => docs.filter((d) => d.id !== id));
-    setPdfStatus({ text: doc ? `${doc.name} dihapus dari konteks.` : '', ok: null, reading: false });
-  };
-
-  const resetDefaults = () => {
-    const s = { ...DEFAULTS, apiKey: settings.apiKey, deepgramKey: settings.deepgramKey };
-    setSettings(s);
-    setDraft(s);
-    setTest({ text: 'Pengaturan dikembalikan ke default (API key dipertahankan).', ok: null, running: false });
-  };
-
   /* ---------- turunan ---------- */
-  const connected = ready && !!settings.apiKey;
+  const connected = ready && !!sessionId;
   const poseFile = POSES[pose] || 'ask';
-  const txs = TXS.filter((t) => txFilter === 'all' || t.dir === txFilter);
-  const contextSize = buildContext(draft.contextText, documents).length;
+  const txs = txRows.filter((t) => txFilter === 'all' || t.dir === txFilter);
+  const contextSize = String(draft.contextText || '').length;
   const contextOver = contextSize > MAX_CONTEXT;
   const voiceBusy = voiceStatus !== 'idle';
   const inCall = callStatus !== 'off';
@@ -805,17 +825,17 @@ export default function Page() {
     ? 'Memuat…'
     : connected
     ? 'Online · Asisten virtual Agent Nusa'
-    : 'Belum terhubung · atur API key di Pengaturan AI';
+    : 'Menyiapkan percakapan…';
 
   const askAbout = (t) => {
-    setInput(`Tolong jelaskan transaksi "${t.name}" ${rp(t.amt)} tanggal ${t.date}.`);
+    setInput(`Tolong jelaskan transaksi "${t.name}" ${rp(t.amt)} pada ${t.waktu}.`);
     go('chat');
   };
 
   const navItems = [
     ['chat', 'Chat Bantuan', <ChatIcon key="c" />],
     ['history', 'Riwayat Transaksi', <ListIcon key="h" />],
-    ['settings', 'Pengaturan AI', <GearIcon key="s" />]
+    ['settings', 'Pengaturan', <GearIcon key="s" />]
   ];
 
   return (
@@ -844,6 +864,9 @@ export default function Page() {
                 {label}
               </button>
             ))}
+            <button type="button" className="nav-item" onClick={logout}>
+              Keluar
+            </button>
           </nav>
           <div className="side-spacer" />
           <div className="mascot-card">
@@ -866,6 +889,18 @@ export default function Page() {
                 <span>{statusText}</span>
               </div>
             </div>
+            <label htmlFor="session-pick" className="sr">Pilih percakapan</label>
+            <select
+              id="session-pick"
+              className="session-pick"
+              value={sessionId || ''}
+              disabled={busy || inCall || voiceBusy}
+              onChange={(e) => openSession(e.target.value).catch((err) => toast((err && err.message) || 'Percakapan gagal dibuka.'))}
+            >
+              {sessions.map((x) => (
+                <option key={x.id} value={x.id}>{fmtWaktu(x.created_at)}</option>
+              ))}
+            </select>
             <button type="button" className="btn ghost" onClick={newChat}>Chat baru</button>
             <button
               type="button"
@@ -884,19 +919,10 @@ export default function Page() {
           </header>
 
           <div className="messages" ref={messagesRef} role="log" aria-live="polite" aria-label="Percakapan">
-            <div className="stamp">Hari ini, 14:12</div>
             <div className="msg bot">
-              Halo, Dimas! Saya Agent Nusa. Pilih topik di bawah atau ketik pertanyaan Anda.
+              {`Halo, ${account ? account.nama : 'Nasabah'}! Saya Agent Nusa. Pilih topik di bawah atau ketik pertanyaan Anda.`}
               <span className="small">Demi keamanan, jangan pernah membagikan PIN, password, atau kode OTP kepada siapa pun, termasuk kami.</span>
             </div>
-            {ready && !settings.apiKey && (
-              <div className="msg bot">
-                Agent Nusa belum bisa menjawab karena API key belum diisi.
-                <div className="row">
-                  <button type="button" className="btn primary" onClick={() => go('settings')}>Atur API key</button>
-                </div>
-              </div>
-            )}
             {chat.map((m) => (
               <div key={m.id} className={'msg ' + (m.role === 'user' ? 'user' : 'bot') + (m.err ? ' err' : '')}>
                 {m.pending ? (
@@ -991,9 +1017,9 @@ export default function Page() {
         {/* TRANSAKSI */}
         <section className="glass tx" aria-label="Riwayat transaksi">
           <div className="balance">
-            <div className="balance-sm">Tabungan Agent Nusa · •••• 4821</div>
-            <div className="balance-big">Rp 24.380.500</div>
-            <div className="balance-sm">Data demo · saldo per 17 Nov 2026, 14:12</div>
+            <div className="balance-sm">{account ? `Tabungan Agent Nusa · •••• ${account.nomor_akhir}` : 'Memuat rekening…'}</div>
+            <div className="balance-big">{account ? rp(account.saldo_total) : '—'}</div>
+            <div className="balance-sm">Saldo Total · data demo</div>
           </div>
           <div className="tx-head">
             <h2>Riwayat Transaksi</h2>
@@ -1009,7 +1035,7 @@ export default function Page() {
           <div className="tx-list">
             {txs.map((t) => (
               <button
-                key={t.name + t.date + t.time}
+                key={t.id}
                 type="button"
                 className="tx-row"
                 aria-label={`${t.name}, ${t.dir === 'in' ? 'masuk' : 'keluar'} ${rp(t.amt)}, ${t.status}. Tanyakan ke Agent Nusa`}
@@ -1018,7 +1044,7 @@ export default function Page() {
                 <span className="tx-ava" aria-hidden="true">{t.ini}</span>
                 <span className="tx-main">
                   <span className="tx-name">{t.name}</span>
-                  <span className="tx-meta">{`${t.date} · ${t.time} · ${t.channel}`}</span>
+                  <span className="tx-meta">{`${t.waktu} · ${t.channel}`}</span>
                 </span>
                 <span className="tx-right">
                   <span className={'tx-amt' + (t.dir === 'in' ? ' in' : '')}>{(t.dir === 'in' ? '+ ' : '- ') + rp(t.amt)}</span>
@@ -1030,40 +1056,19 @@ export default function Page() {
         </section>
 
         {/* PENGATURAN */}
-        <section className="glass settings" aria-label="Pengaturan AI">
+        <section className="glass settings" aria-label="Pengaturan">
           <div className="settings-inner">
             <header className="settings-head">
               <div className="avatar"><img src="/assets/laptop.png" alt="" /></div>
               <div>
-                <h1>Pengaturan AI</h1>
-                <p>Masukkan API key Netra Runtime agar Agent Nusa bisa menjawab. Pengaturan disimpan di browser ini saja.</p>
+                <h1>Pengaturan</h1>
+                <p>Koneksi AI sekarang diatur di server. Di sini Anda mengatur suara dan menempelkan lampiran ke percakapan yang sedang dibuka.</p>
               </div>
             </header>
 
             <form onSubmit={saveSettings} autoComplete="off" noValidate>
               <fieldset className="group">
-                <legend>Koneksi</legend>
-
-                <div className="field">
-                  <label htmlFor="apiKey"><span>API key</span></label>
-                  <div className="with-btn">
-                    <input
-                      id="apiKey"
-                      type={showKey ? 'text' : 'password'}
-                      placeholder="Tempel API key Netra di sini"
-                      spellCheck={false}
-                      autoCapitalize="off"
-                      autoComplete="off"
-                      value={draft.apiKey}
-                      onChange={upd('apiKey')}
-                    />
-                    <button type="button" className="btn ghost" aria-pressed={showKey} onClick={() => setShowKey((v) => !v)}>
-                      {showKey ? 'Sembunyikan' : 'Tampilkan'}
-                    </button>
-                  </div>
-                  <small>Key tersimpan di browser Anda dan dikirim lewat server aplikasi ini ke API Netra. Jangan bagikan layar ini saat key terlihat.</small>
-                </div>
-
+                <legend>Suara</legend>
                 <div className="field">
                   <label htmlFor="deepgramKey"><span>API key Deepgram (suara &amp; telepon)</span></label>
                   <div className="with-btn">
@@ -1081,57 +1086,14 @@ export default function Page() {
                       {showDgKey ? 'Sembunyikan' : 'Tampilkan'}
                     </button>
                   </div>
-                  <small>Dipakai untuk tombol mic, jawaban bersuara, dan tombol Telepon. Key tersimpan di browser ini. Untuk mengenali suara, key dikirim langsung ke Deepgram; untuk suara agent (Flux, suara Fitri), key dikirim lewat server aplikasi ini. Mikrofon hanya bisa dipakai di https:// atau localhost.</small>
-                </div>
-
-                <div className="field">
-                  <label htmlFor="model"><span>Model ID</span></label>
-                  <input id="model" type="text" placeholder="deepseek/deepseek-v4.1-flash" spellCheck={false} value={draft.model} onChange={upd('model')} />
-                  <small>Harus sama persis dengan katalog akun Netra Anda. Endpoint: <code>POST https://api.netraruntime.com/v1/chat/completions</code>.</small>
+                  <small>Dipakai untuk tombol mic, jawaban bersuara, dan tombol Telepon. Key tersimpan di browser ini. Mikrofon hanya bisa dipakai di https:// atau localhost.</small>
                 </div>
               </fieldset>
 
               <fieldset className="group">
-                <legend>Perilaku AI</legend>
-
+                <legend>Lampiran percakapan ini</legend>
                 <div className="field">
-                  <label htmlFor="systemPrompt"><span>System prompt</span></label>
-                  <textarea id="systemPrompt" rows={7} value={draft.systemPrompt} onChange={upd('systemPrompt')} />
-                  <small>Data demo nasabah (saldo dan riwayat transaksi) serta konteks tambahan di bawah otomatis ditambahkan di belakang prompt ini.</small>
-                </div>
-
-                <div className="grid3">
-                  <div className="field">
-                    <label htmlFor="maxTokens"><span>Max tokens</span></label>
-                    <input id="maxTokens" type="number" min="16" max="8192" step="16" value={draft.maxTokens} onChange={upd('maxTokens')} />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="temperature"><span>Temperature</span></label>
-                    <input id="temperature" type="number" min="0" max="2" step="0.1" value={draft.temperature} onChange={upd('temperature')} />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="reasoning"><span>Reasoning</span></label>
-                    <select id="reasoning" value={draft.reasoning} onChange={upd('reasoning')}>
-                      <option value="off">Matikan (cepat)</option>
-                      <option value="low">Low</option>
-                      <option value="high">High</option>
-                      <option value="max">Max</option>
-                      <option value="omit">Tidak dikirim</option>
-                    </select>
-                  </div>
-                </div>
-
-                <label className="check" htmlFor="stream">
-                  <input id="stream" type="checkbox" checked={!!draft.stream} onChange={upd('stream')} />
-                  <span>Tampilkan jawaban bertahap (streaming)</span>
-                </label>
-              </fieldset>
-
-              <fieldset className="group">
-                <legend>Konteks tambahan</legend>
-
-                <div className="field">
-                  <label htmlFor="contextText"><span>Konteks teks</span></label>
+                  <label htmlFor="contextText"><span>Catatan teks</span></label>
                   <textarea
                     id="contextText"
                     rows={5}
@@ -1139,7 +1101,7 @@ export default function Page() {
                     value={draft.contextText}
                     onChange={upd('contextText')}
                   />
-                  <small>Catatan ini ikut dikirim ke AI setelah Anda klik Simpan pengaturan.</small>
+                  <small>Catatan ditempel ke percakapan yang sedang dibuka saat Anda klik Simpan pengaturan.</small>
                 </div>
 
                 <div className="field">
@@ -1153,7 +1115,7 @@ export default function Page() {
                     disabled={pdfStatus.reading}
                     onChange={onPdfChange}
                   />
-                  <small>Teks PDF dibaca langsung di browser lalu langsung dipakai sebagai konteks. PDF hasil scan (gambar) tidak bisa dibaca.</small>
+                  <small>Teks PDF dibaca di browser lalu ditempel ke percakapan ini. Lampiran tidak bisa dilepas; tekan Chat baru untuk percakapan tanpa lampiran. PDF hasil scan (gambar) tidak bisa dibaca.</small>
                   <p
                     id="pdf-status"
                     className={'pdf-status' + (pdfStatus.ok === true ? ' ok' : pdfStatus.ok === false ? ' bad' : '')}
@@ -1167,10 +1129,7 @@ export default function Page() {
                       {documents.map((d) => (
                         <li key={d.id}>
                           <span className="pdf-name">{d.name}</span>
-                          <span className="pdf-meta">{`${d.pages} halaman · ${fmtNum(d.text.length)} karakter`}</span>
-                          <button type="button" className="btn ghost danger" aria-label={`Hapus ${d.name}`} onClick={() => removeDoc(d.id)}>
-                            Hapus
-                          </button>
+                          <span className="pdf-meta">{`${fmtNum(d.chars)} karakter`}</span>
                         </li>
                       ))}
                     </ul>
@@ -1178,19 +1137,13 @@ export default function Page() {
                 </div>
 
                 <div className={'context-size' + (contextOver ? ' over' : '')}>
-                  {`Ukuran konteks: ${fmtNum(contextSize)} / ${fmtNum(MAX_CONTEXT)} karakter`}
+                  {`Ukuran catatan: ${fmtNum(contextSize)} / ${fmtNum(MAX_CONTEXT)} karakter`}
                   {contextOver && <span> · terlalu panjang, bagian akhir akan dipotong</span>}
                 </div>
               </fieldset>
 
               <div className="actions">
                 <button type="submit" className="btn primary">Simpan pengaturan</button>
-                <button type="button" className="btn ghost" disabled={test.running} onClick={runTest}>Uji koneksi</button>
-                <button type="button" className="btn ghost danger" onClick={clearKey}>Hapus API key</button>
-                <button type="button" className="btn ghost" onClick={resetDefaults}>Kembalikan default</button>
-              </div>
-              <div className={'test-result' + (test.ok === true ? ' ok' : test.ok === false ? ' bad' : '')} role="status" aria-live="polite">
-                {test.text}
               </div>
             </form>
           </div>
@@ -1204,6 +1157,7 @@ export default function Page() {
             {l}
           </button>
         ))}
+        <button type="button" className="nav-item" onClick={logout}>Keluar</button>
       </nav>
 
       <div className={'toast' + (toastMsg ? ' show' : '')} role="status" aria-live="polite">{toastMsg}</div>
