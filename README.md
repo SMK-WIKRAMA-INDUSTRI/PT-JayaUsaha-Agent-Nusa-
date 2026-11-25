@@ -14,48 +14,67 @@ Landing page dan chatbot customer service untuk bank, dengan tampilan glass, mas
 **Chatbot (`/chat`)**
 - Antarmuka glass dengan chat, panel riwayat transaksi (filter masuk/keluar), dan versi mobile
 - Jawaban AI bertahap (streaming) dengan tombol hentikan
-- Halaman **Pengaturan AI**: API key, model, system prompt, max tokens, temperature, reasoning, dan uji koneksi
+- Halaman **Pengaturan** untuk fitur suara (key Deepgram) dan lampiran PDF atau catatan teks
+- Login, register, dan onboarding dengan Supabase Auth; Sesi Percakapan tersimpan di database dan bisa dilanjutkan
 - Pose maskot berubah mengikuti status (berpikir, bekerja, berhasil, minta maaf, belum terhubung)
-- Data demo nasabah ikut dikirim ke AI, sehingga Bantu bisa menjawab pertanyaan seperti "transfer ke Rina belum masuk"
+- Data keuangan Nasabah dari database ikut dikirim ke AI sebagai Snapshot Keuangan, sehingga Bantu bisa menjawab pertanyaan seperti "transfer ke Rina belum masuk"
 - Pengingat keamanan: Bantu tidak pernah meminta PIN, password, CVV, atau OTP
 
 ## Tech stack
 
 - Next.js 15 (App Router) dan React 19, JavaScript
 - CSS biasa (tanpa library UI), font Plus Jakarta Sans lewat `next/font`
+- Supabase (Auth dan Postgres dengan Row Level Security)
 - API route sebagai proxy ke Netra Runtime (`POST /v1/chat/completions`)
+- Vitest untuk unit test
 
 ## Struktur proyek
 
 ```
+middleware.js           menjaga sesi login dan mengarahkan halaman yang butuh login
 app/
   page.jsx              landing page (/)
   landing.css           gaya landing page
+  login/                halaman login
+  register/             halaman register
+  onboarding/           wizard onboarding Nasabah baru
   chat/page.jsx         aplikasi chat (/chat)
-  api/chat/route.js     proxy ke Netra, meneruskan stream jawaban
+  api/chat/route.js     menyusun prompt di server, memanggil Netra, meneruskan stream
+  api/sessions/         buat sesi, ambil riwayat sesi, tambah lampiran
   layout.jsx            layout dan font
   globals.css           gaya chat dan dasar
 components/
   PhoneDemo.jsx         animasi di mockup HP
   FeatureTabs.jsx       tab contoh percakapan
 lib/
-  data.js               data demo, system prompt, nilai default
+  prompt.js             system prompt statis berversi dan penyusun prompt
+  snapshot.js           Snapshot Keuangan sesi
+  keuangan.js           hitungan saldo dan Pengeluaran Bulanan
+  format.js             format rupiah dan tanggal
+  sse.js                parser stream SSE
+  data.js               pengaturan browser (Deepgram, lampiran) dan chip contoh
   api.js                klien streaming ke /api/chat
+  supabase/             klien Supabase (browser, server, admin)
+  server/               helper server untuk route sesi dan respons HTTP
+supabase/migrations/    skema, RLS, dan fungsi Postgres
+tests/                  unit test (vitest)
+scripts/cek-cache-netra.mjs   cek context caching DeepSeek lewat Netra
 public/assets/          pose maskot Bantu
 ```
 
 ## Menjalankan di komputer
 
-Butuh Node.js 18.18 atau lebih baru.
+Butuh Node.js 20.6 atau lebih baru (script `--env-file` membutuhkannya).
 
 ```bash
 git clone <URL-REPO-ANDA>
 cd <NAMA-FOLDER>
 npm install
+npm test
 npm run dev
 ```
 
-Buka http://localhost:3000 untuk landing page, atau http://localhost:3000/chat untuk chatbot.
+Sebelum chatbot bisa dipakai, siapkan Supabase dan API key (lihat bagian di bawah). Buka http://localhost:3000 untuk landing page, atau http://localhost:3000/register untuk mendaftar.
 
 Mode produksi:
 
@@ -64,14 +83,15 @@ npm run build
 npm start
 ```
 
-## Mengatur API key
+## Menyiapkan Supabase dan API key
 
-1. Buka `/chat`, lalu masuk ke **Pengaturan AI**.
-2. Tempel API key Netra Runtime Anda.
-3. Pastikan **Model ID** sama persis dengan katalog akun Anda (default: `deepseek/deepseek-v4.1-flash`).
-4. Klik **Uji koneksi**, lalu **Simpan pengaturan**.
+1. Buat project di supabase.com. Di **Authentication > Sign In / Providers > Email**, matikan **Confirm email** untuk demo.
+2. Jalankan isi `supabase/migrations/20261124000001_fondasi.sql` di **SQL Editor**.
+3. Salin `.env.example` menjadi `.env.local`, lalu isi URL dan key Supabase serta `NETRA_API_KEY`.
+4. `npm run dev`, buka http://localhost:3000/register, lalu jalani onboarding.
 
-Jika API menolak parameter reasoning, ubah pilihan **Reasoning** menjadi "Tidak dikirim".
+Key Netra sekarang hanya ada di server (`NETRA_API_KEY`). Key Deepgram untuk fitur suara masih diisi di halaman **Pengaturan**.
+Cek apakah context caching DeepSeek lewat Netra bekerja: `node --env-file=.env.local scripts/cek-cache-netra.mjs`.
 
 ## Deploy ke Vercel
 
@@ -81,25 +101,31 @@ Jika API menolak parameter reasoning, ubah pilihan **Reasoning** menjadi "Tidak 
 
 Atau lewat CLI: jalankan `npx vercel` di folder proyek.
 
-### Environment variable (opsional)
+### Environment variable
 
 | Nama | Default | Fungsi |
 | --- | --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL` | wajib | Alamat project Supabase |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | wajib | Key publik (anon) Supabase untuk browser |
+| `SUPABASE_SERVICE_ROLE_KEY` | wajib | Key rahasia Supabase, hanya dipakai server. Jangan diberi awalan `NEXT_PUBLIC_` |
+| `NETRA_API_KEY` | wajib | API key Netra Runtime, hanya dipakai server |
+| `NETRA_MODEL` | `deepseek/deepseek-v4.1-flash` | Model ID di katalog akun Netra Anda |
 | `NETRA_BASE_URL` | `https://api.netraruntime.com/v1` | Mengganti alamat API Netra |
 
 ## Cara kerja dan keamanan
 
-- API key diisi pengguna dan disimpan di `localStorage` browser mereka. Server tidak menyimpannya.
-- Browser memanggil `/api/chat` dengan header `x-api-key`. Server meneruskan ke Netra dengan `Authorization: Bearer ...` dan label `X-Netra-Agent: bank-nusa-cs`.
+- Nasabah login dengan Supabase Auth. Data rekening, Transaksi, dan Sesi Percakapan disimpan di Supabase Postgres dengan Row Level Security, sehingga tiap Nasabah hanya bisa membaca datanya sendiri.
+- Browser hanya mengirim `session_id` dan pesan baru. Server menyusun prompt dengan urutan tetap (system prompt statis → Snapshot Keuangan sesi → riwayat) supaya context caching DeepSeek bisa kena. Lihat `docs/adr/0003-*`.
+- Setiap balasan menyimpan `usage` dari API (termasuk token cache hit) di tabel `chat_messages`.
 - Alamat API dikunci di server (bukan dari klien), sehingga endpoint tidak bisa dipakai untuk menembak alamat lain.
-- Batas durasi fungsi serverless diset 60 detik. Jawaban sangat panjang dengan reasoning tinggi bisa terpotong; turunkan Max tokens atau matikan Reasoning.
-- Riwayat chat disimpan di browser dan bisa dihapus lewat tombol **Chat baru**.
+- Batas durasi fungsi serverless diset 60 detik. Server memakai `max_tokens` 600 dan reasoning dimatikan (`app/api/chat/route.js`) supaya jawaban selesai dalam batas itu.
+- Tombol **Chat baru** membuka Sesi Percakapan baru; sesi lama tetap tersimpan dan bisa dilanjutkan.
 - Tombol **Hubungi agen** masih simulasi dan belum terhubung ke contact center.
 
 ## Kustomisasi
 
-- **Data nasabah dan transaksi:** ubah `TXS` dan `demoContext()` di `lib/data.js`. Untuk produksi, ganti dengan data dari backend bank.
-- **Perilaku AI:** ubah `DEFAULT_SYSTEM_PROMPT` di `lib/data.js`, atau lewat halaman Pengaturan AI.
+- **Data demo Nasabah baru:** fungsi `seed_nasabah_baru` di migrasi Supabase.
+- **Perilaku AI:** `SYSTEM_PROMPTS` di `lib/prompt.js`. Jika teksnya diubah, tambahkan versi baru dan naikkan `SYSTEM_PROMPT_VERSION` agar sesi lama tidak kehilangan cache.
 - **Maskot:** ganti gambar di `public/assets/` dengan nama file yang sama.
 - **Warna:** palet ada di bagian atas `app/globals.css` dan `app/landing.css`.
 - **Copy landing page:** dua isian FAQ masih placeholder (`[ISI JAM OPERASIONAL AGEN]` dan `[ISI TAUTAN KEBIJAKAN PRIVASI]`) di `app/page.jsx`.

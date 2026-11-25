@@ -241,3 +241,8 @@ a.nav-item{text-decoration:none}
   .call-info{flex-basis:calc(100% - 80px)}
   .call-end{flex:1;justify-content:center}
 }
+
+/* pemilih Sesi Percakapan */
+.session-pick{min-height:44px;max-width:190px;padding:0 12px;border-radius:14px;border:1px solid var(--b-ctrl);background:var(--g-ctrl);font-size:13px;font-weight:600}
+.session-pick option{color:#0E2146}
+@media (max-width:640px){.session-pick{max-width:118px}}
