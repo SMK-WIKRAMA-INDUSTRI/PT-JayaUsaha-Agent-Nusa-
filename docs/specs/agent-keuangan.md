@@ -55,10 +55,10 @@ Fakta dari dokumentasi resmi DeepSeek (Context Caching on Disk):
 Konsekuensinya bagi kita:
 - Kita **tidak menyimpan cache** itu sendiri. Yang kita simpan di database adalah **Sesi Percakapan**: semua pesan beserta **Snapshot Keuangan** yang dibekukan saat sesi dibuat.
 - Ketika sesi dilanjutkan, server menyusun ulang prompt dengan urutan dan isi yang identik (bagian 7), sehingga permintaan berikutnya berpeluang kena cache, termasuk setelah Nasabah logout lalu login lagi, selama cache di DeepSeek belum kedaluwarsa.
-- Setiap balasan mencatat `usage` dari API, termasuk `prompt_cache_hit_tokens` dan `prompt_cache_miss_tokens` jika tersedia, untuk membuktikan cache benar-benar kena.
+- Setiap balasan mencatat `usage` dari API, termasuk jumlah token yang kena cache (lewat Netra: `prompt_tokens_details.cached_tokens`), untuk membuktikan cache benar-benar kena.
 - **Risiko yang harus diverifikasi lebih dulu:** apakah proxy Netra Runtime meneruskan caching ke DeepSeek dan mengembalikan field cache tersebut. Jika tidak, fitur tetap berjalan, hanya tanpa penghematan biaya.
 
-> Hasil verifikasi lewat Netra: **belum dijalankan** (menunggu `NETRA_API_KEY`). Jalankan `node --env-file=.env.local scripts/cek-cache-netra.mjs` dan catat hasilnya di sini.
+> **Hasil verifikasi lewat Netra (25 Nov 2026, `scripts/cek-cache-netra.mjs`):** caching **berfungsi**. Prompt ~2.050 token dengan prefix sama: permintaan ke-1 dan ke-2 `cached_tokens = 0`, permintaan ke-3 `cached_tokens = 1.792` (sesuai aturan DeepSeek: prefix bersama dipersist setelah permintaan ke-2). Netra mengembalikan field cache dalam format OpenAI, yaitu `usage.prompt_tokens_details.cached_tokens` (bukan `prompt_cache_hit_tokens`). `stream_options.include_usage` diterima, dan `usage` ikut di chunk terakhir stream.
 
 ## 5. Alur utama
 
@@ -203,7 +203,7 @@ Setiap tahap menjadi satu PR yang bisa didemokan.
 - Setup Supabase cloud, migrasi, RLS, dan `seed_nasabah_baru`.
 - Register, login, dan onboarding (Profil Risiko dan Goal boleh dilewati; kuesioner Profil Risiko boleh berupa placeholder hingga Tahap 3).
 - Sesi Percakapan di DB, `/api/chat` menyusun prompt di server (bagian 7), pencatatan `usage`, dan API key dipindah ke env.
-- **Langkah pertama:** verifikasi apakah Netra mengembalikan `prompt_cache_hit_tokens`.
+- **Langkah pertama:** verifikasi apakah Netra mengembalikan jumlah token cache (hasil: ya, `prompt_tokens_details.cached_tokens`).
 - Selesai jika: dua Nasabah berbeda tidak bisa saling melihat data; sesi yang dilanjutkan setelah login ulang memiliki prefix identik dan `usage` tercatat; panel saldo dan Transaksi membaca dari DB.
 
 **Tahap 2: Alokasi**

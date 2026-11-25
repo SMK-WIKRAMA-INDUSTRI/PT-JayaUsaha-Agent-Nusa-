@@ -2856,7 +2856,7 @@ rollback;
 Dalam satu sesi, kirim tiga pesan berturut-turut, lalu jalankan:
 
 ```sql
-select id, role, usage->>'prompt_tokens' as prompt, usage->>'prompt_cache_hit_tokens' as cache_hit
+select id, role, usage->>'prompt_tokens' as prompt, usage->'prompt_tokens_details'->>'cached_tokens' as cache_hit
 from public.chat_messages where session_id = '<session id>' order by id;
 ```
 
