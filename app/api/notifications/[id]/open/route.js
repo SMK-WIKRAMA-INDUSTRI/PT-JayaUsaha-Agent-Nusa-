@@ -1,7 +1,7 @@
 import { getUser } from '../../../../../lib/supabase/server';
 import { createAdminClient } from '../../../../../lib/supabase/admin';
 import { renderRencana } from '../../../../../lib/alokasi';
-import { buildPromptMessages } from '../../../../../lib/prompt';
+import { buildPromptMessages, toolsFor } from '../../../../../lib/prompt';
 import { fail } from '../../../../../lib/server/http';
 import { netraSiap, panggilNetra } from '../../../../../lib/server/netra';
 import { kedaluwarsakanRencana } from '../../../../../lib/server/rencana';
@@ -62,8 +62,8 @@ export async function POST(_req, { params }) {
   if (netraSiap()) {
     try {
       const { data: s } = await admin.from('chat_sessions').select('id, snapshot, system_prompt_version').eq('id', session.id).single();
-      const { data: rows } = await admin.from('chat_messages').select('id, role, content, created_at').eq('session_id', session.id).order('id');
-      const res = await panggilNetra(buildPromptMessages({ session: s, history: rows }), { maxTokens: 400, signal: AbortSignal.timeout(25000) });
+      const { data: rows } = await admin.from('chat_messages').select('id, role, content, tool, created_at').eq('session_id', session.id).order('id');
+      const res = await panggilNetra(buildPromptMessages({ session: s, history: rows }), { maxTokens: 400, signal: AbortSignal.timeout(25000), tools: toolsFor(s.system_prompt_version) });
       if (res.ok) {
         const j = await res.json();
         const text = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
