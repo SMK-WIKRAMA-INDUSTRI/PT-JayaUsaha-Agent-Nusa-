@@ -3,11 +3,14 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { CHIPS, DEFAULTS, MAX_CONTEXT, normalizeSettings, rp } from '../../lib/data';
-import { addAttachment, callChat, createSession, demoGaji, demoReset, getSessionMessages, listSessions, openNotification } from '../../lib/api';
+import { addAttachment, callChat, createSession, demoBelanja, demoBoros, demoGaji, demoReset, getSessionMessages, listSessions, openNotification } from '../../lib/api';
 import RencanaCard from './RencanaCard';
+import PengeluaranCard from './PengeluaranCard';
+import RingkasanCard from './RingkasanCard';
 import NotifBell from './NotifBell';
 import DemoPanel from './DemoPanel';
 import { fmtWaktu } from '../../lib/format';
+import { labelKategori } from '../../lib/kategori';
 import { createClient } from '../../lib/supabase/browser';
 import { extractPdfText } from '../../lib/pdf';
 import { MAX_RECORDING_SECONDS, collectTranscript, getMicrophone, openDeepgramSocket, pickRecorderMime } from '../../lib/voice';
@@ -53,12 +56,14 @@ const writeLS = (k, v) => {
 const fmtClock = (sec) => `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
 // Teks bot yang sedang dibacakan: hanya bagian yang sudah diucapkan yang tampil.
 const visibleText = (m) => (typeof m.shown === 'number' ? m.content.slice(0, m.shown) : m.content);
-// Pesan dari database -> isi chat. Lampiran tidak ditampilkan. Kartu Rencana menjadi komponen, pembaruan menjadi catatan kecil.
+// Pesan dari database -> isi chat. Lampiran tidak ditampilkan. Kartu (Rencana, dan kartu hasil tool) menjadi komponen,
+// pembaruan menjadi catatan kecil. Baris assistant tanpa teks (hanya panggilan tool) tidak tampil.
 const toChat = (rows) =>
   rows.flatMap((m) => {
-    if (m.role === 'user' || m.role === 'assistant') return [{ id: 'db' + m.id, role: m.role, content: m.content }];
+    if (m.role === 'user' || (m.role === 'assistant' && m.content)) return [{ id: 'db' + m.id, role: m.role, content: m.content }];
     if (m.role === 'kartu' && m.card && m.card.jenis === 'rencana') return [{ id: 'db' + m.id, role: 'card', card: m.card }];
     if (m.role === 'pembaruan') return [{ id: 'db' + m.id, role: 'note', content: m.content.split('\n')[0] }];
+    if (m.role === 'tool' && m.card) return [{ id: 'db' + m.id, role: 'card', card: m.card }];
     return [];
   });
 // Nama file dari isi lampiran "[Dokumen: nama]\n...".
@@ -69,7 +74,7 @@ const toTxRow = (t) => ({
   ini: t.pihak.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join(''),
   name: t.pihak,
   waktu: fmtWaktu(t.waktu),
-  channel: t.kanal,
+  channel: t.kanal + (t.kategori_belanja ? ' · ' + labelKategori(t.kategori_belanja) : ''),
   amt: Number(t.nominal),
   dir: t.arah === 'masuk' ? 'in' : 'out',
   st: t.status === 'berhasil' ? 'ok' : t.status === 'gagal' ? 'fail' : 'wait',
@@ -142,6 +147,7 @@ export default function Page() {
   const [kantong, setKantong] = useState([]); // [{ pocket_id, nama, jenis, saldo }]
   const [notifications, setNotifications] = useState([]); // [{ id, isi, dibaca_at, created_at }]
   const [demoBusy, setDemoBusy] = useState(false);
+  const [cardTick, setCardTick] = useState(0); // naik setiap kali data berubah, kartu memuat ulang statusnya
   const [toastMsg, setToastMsg] = useState('');
   const [documents, setDocuments] = useState([]); // lampiran sesi ini: { id, name, chars }
   const [pdfStatus, setPdfStatus] = useState({ text: '', ok: null, reading: false });
@@ -275,7 +281,7 @@ export default function Page() {
     const supabase = createClient();
     const [{ data: saldo, error: e1 }, { data: tx, error: e2 }, { data: profile, error: e3 }, { data: kt, error: e4 }] = await Promise.all([
       supabase.from('v_saldo_bebas').select('nomor_akhir, saldo_total, saldo_bebas').maybeSingle(),
-      supabase.from('transactions').select('id, arah, nominal, pihak, kanal, status, waktu').order('waktu', { ascending: false }).limit(30),
+      supabase.from('transactions').select('id, arah, nominal, pihak, kanal, status, waktu, kategori_belanja').order('waktu', { ascending: false }).limit(30),
       supabase.from('profiles').select('nama_panggilan').maybeSingle(),
       supabase.from('v_saldo_kantong').select('pocket_id, nama, jenis, saldo')
     ]);
@@ -330,9 +336,15 @@ export default function Page() {
     openSession(sid).catch(() => {});
   };
 
-  const afterPlanChange = () => {
+  // Giliran atau tombol yang mengubah data: saldo dan status kartu dimuat ulang.
+  const segarkanData = () => {
     loadFinance().catch(() => {});
-    refreshSession(); // menampilkan catatan pembaruan Rencana
+    setCardTick((t) => t + 1);
+  };
+
+  const afterCardChange = () => {
+    segarkanData();
+    refreshSession(); // menampilkan catatan pembaruan dari kartu
   };
 
   const onDemoGaji = async () => {
@@ -348,8 +360,34 @@ export default function Page() {
     }
   };
 
+  const onDemoBelanja = async () => {
+    setDemoBusy(true);
+    try {
+      const res = await demoBelanja();
+      await loadFinance();
+      toast(`Belanja ${res.transaksi.pihak} ${rp(res.transaksi.nominal)} tercatat.`);
+    } catch (e) {
+      toast((e && e.message) || 'Simulasi belanja gagal.');
+    } finally {
+      setDemoBusy(false);
+    }
+  };
+
+  const onDemoBoros = async () => {
+    setDemoBusy(true);
+    try {
+      const res = await demoBoros();
+      await loadFinance();
+      toast(`Skenario boros: ${res.jumlah} transaksi, total ${rp(res.total)}. Coba tanya "Pengeluaranku bulan ini gimana?"`);
+    } catch (e) {
+      toast((e && e.message) || 'Skenario boros gagal.');
+    } finally {
+      setDemoBusy(false);
+    }
+  };
+
   const onDemoReset = async () => {
-    if (!window.confirm('Reset data demo? Semua transaksi, Kantong, Goal, notifikasi, dan percakapan akan dihapus lalu dibuat ulang.')) return;
+    if (!window.confirm('Reset data demo? Semua transaksi, Kantong, Goal, catatan pengeluaran, notifikasi, dan percakapan akan dihapus lalu dibuat ulang.')) return;
     setDemoBusy(true);
     try {
       await demoReset();
@@ -413,6 +451,18 @@ export default function Page() {
         const next = c.filter((m) => m.id !== aid).map((m) => (m.id === uid ? { ...m, skip: true } : m));
         return extra ? [...next, extra] : next;
       });
+    let segar = false;
+    // Baris yang disisipkan server di tengah giliran (pembaruan, kartu) tampil sebelum gelembung balasan.
+    const onEvent = (ev) => {
+      if (!ev.pesan) return;
+      segar = true;
+      const items = toChat([ev.pesan]);
+      setChat((c) => {
+        const baru = items.filter((x) => !c.some((m) => m.id === x.id));
+        const i = c.findIndex((m) => m.id === aid);
+        return i < 0 ? [...c, ...baru] : [...c.slice(0, i), ...baru, ...c.slice(i)];
+      });
+    };
 
     try {
       await callChat(
@@ -424,7 +474,8 @@ export default function Page() {
           got += d;
           // Jawaban suara baru ditampilkan saat dibacakan, supaya teks berjalan seiring suara.
           if (!voice) setChat((c) => c.map((m) => (m.id === aid ? { ...m, content: got, pending: false } : m)));
-        }
+        },
+        onEvent
       );
       if (!got.trim()) throw new Error('Model mengembalikan jawaban kosong. Coba kirim ulang pertanyaan Anda.');
       if (voice) await speakReply(aid, got.trim(), ac.signal);
@@ -442,6 +493,7 @@ export default function Page() {
         errTimer.current = setTimeout(() => setStatusErr(false), 4000);
       }
     } finally {
+      if (segar) segarkanData();
       abortRef.current = null;
       setBusy(false);
     }
@@ -689,10 +741,27 @@ export default function Page() {
     setChat((c) => [...c, { id: uid, role: 'user', content: question }]);
 
     let reply = '';
-    const replyPromise = callChat(sid, question, { mode: 'call', signal: call.ac.signal }, (d) => {
-      reply += d;
+    let segar = false;
+    const onEvent = (ev) => {
+      if (!ev.pesan) return;
+      segar = true;
+      const items = toChat([ev.pesan]);
+      setChat((c) => [...c, ...items.filter((x) => !c.some((m) => m.id === x.id))]);
+    };
+    const replyPromise = callChat(
+      sid,
+      question,
+      { mode: 'call', signal: call.ac.signal },
+      (d) => {
+        reply += d;
+      },
+      onEvent
+    );
+    // Ditangani di bawah. Data disegarkan tepat sekali setelah giliran selesai, berhasil maupun gagal,
+    // termasuk bila panggilan sudah diakhiri selagi menunggu jawaban.
+    replyPromise.catch(() => {}).finally(() => {
+      if (segar) segarkanData();
     });
-    replyPromise.catch(() => {}); // ditangani di bawah
 
     // Seperti CS sungguhan: kalau jawabannya belum siap, agent bilang sedang mengecek.
     let waited = false;
@@ -1038,7 +1107,11 @@ export default function Page() {
             </div>
             {chat.map((m) => {
               if (m.role === 'card') {
-                return <RencanaCard key={m.id} planId={m.card.plan_id} disabled={busy || inCall || voiceBusy} onChanged={afterPlanChange} />;
+                const off = busy || inCall || voiceBusy;
+                if (m.card.jenis === 'rencana') return <RencanaCard key={m.id} planId={m.card.plan_id} tick={cardTick} disabled={off} onChanged={afterCardChange} />;
+                if (m.card.jenis === 'pengeluaran') return <PengeluaranCard key={m.id} actionId={m.card.action_id} tick={cardTick} disabled={off} onChanged={afterCardChange} />;
+                if (m.card.jenis === 'ringkasan') return <RingkasanCard key={m.id} data={m.card.data} />;
+                return null;
               }
               if (m.role === 'note') {
                 return <div key={m.id} className="msg note" role="note">{m.content}</div>;
@@ -1152,7 +1225,7 @@ export default function Page() {
               ))}
             </ul>
           )}
-          <DemoPanel disabled={busy || inCall || voiceBusy || demoBusy} onGaji={onDemoGaji} onReset={onDemoReset} />
+          <DemoPanel disabled={busy || inCall || voiceBusy || demoBusy} onGaji={onDemoGaji} onBelanja={onDemoBelanja} onBoros={onDemoBoros} onReset={onDemoReset} />
           <div className="tx-head">
             <h2>Riwayat Transaksi</h2>
             <span className="tx-note">Ketuk untuk tanya Agent Nusa</span>

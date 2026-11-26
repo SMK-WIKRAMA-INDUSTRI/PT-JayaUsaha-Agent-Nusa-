@@ -9,7 +9,7 @@ import { createClient } from '../../lib/supabase/browser';
 const fmtNum = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
 
 // Kartu Rencana Alokasi. Status dan rincian dibaca langsung dari tabel (RLS), angka dihitung lib/alokasi.js.
-export default function RencanaCard({ planId, disabled, onChanged }) {
+export default function RencanaCard({ planId, tick, disabled, onChanged }) {
   const [plan, setPlan] = useState(null);
   const [ubah, setUbah] = useState({});
   const [err, setErr] = useState('');
@@ -30,7 +30,7 @@ export default function RencanaCard({ planId, disabled, onChanged }) {
     return () => {
       cancelled = true;
     };
-  }, [planId]);
+  }, [planId, tick]);
 
   if (!plan) return <div className="msg bot plan-card">{err || 'Memuat Rencana Alokasi…'}</div>;
 
