@@ -71,7 +71,14 @@ Konsekuensinya bagi kita:
 
 ## 4a. Tool calling lewat Netra
 
-Belum diverifikasi. Diisi pada langkah pertama Tahap 2.
+> **Hasil verifikasi lewat Netra (26 Nov 2026, `scripts/cek-tools-netra.mjs`):**
+> - Non-stream: berfungsi, contoh `tool_calls`: `catat_pengeluaran({"barang": "Bakso", "nominal": 25000, "kategori": "jajan"})`, `finish_reason = tool_calls`.
+> - Stream: berfungsi. Potongan `delta.tool_calls` bisa dirakit menjadi JSON yang valid (`finish_reason = tool_calls`, `usage` ikut di chunk terakhir).
+> - Round-trip hasil tool (`role: "tool"`): berfungsi, model membalas teks.
+> - Cache dengan definisi tool: permintaan ke-3 `cached_tokens = 2.304` (sudah kena cache sejak permintaan pertama pada uji ini karena prefix sama telah dipersist oleh uji sebelumnya).
+> - Prompt yang berakhir dengan pesan `system`: menghasilkan teks.
+>
+> Kesimpulan: Tahap 3 memakai tool calling (ADR 0006).
 
 ## 5. Alur utama
 
