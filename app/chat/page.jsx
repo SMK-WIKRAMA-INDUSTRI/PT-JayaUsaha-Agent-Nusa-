@@ -451,6 +451,8 @@ export default function Page() {
         const next = c.filter((m) => m.id !== aid).map((m) => (m.id === uid ? { ...m, skip: true } : m));
         return extra ? [...next, extra] : next;
       });
+    // Data disegarkan bila server mengirim baris sisipan, atau bila giliran gagal: server mungkin sudah
+    // menjalankan Aksi Tertunda (uang berpindah) sebelum gagal dan membalas dengan error JSON.
     let segar = false;
     // Baris yang disisipkan server di tengah giliran (pembaruan, kartu) tampil sebelum gelembung balasan.
     const onEvent = (ev) => {
@@ -481,6 +483,7 @@ export default function Page() {
       if (voice) await speakReply(aid, got.trim(), ac.signal);
       showPose('ok', 2800);
     } catch (e) {
+      segar = true;
       if (e && e.name === 'AbortError') {
         if (!got.trim()) dropReply();
         else if (voice) revealMessage(aid, got.trim()); // dihentikan saat suara diproses: teks tetap ditampilkan lengkap
@@ -757,11 +760,15 @@ export default function Page() {
       },
       onEvent
     );
-    // Ditangani di bawah. Data disegarkan tepat sekali setelah giliran selesai, berhasil maupun gagal,
-    // termasuk bila panggilan sudah diakhiri selagi menunggu jawaban.
-    replyPromise.catch(() => {}).finally(() => {
-      if (segar) segarkanData();
-    });
+    // Ditangani di bawah. Data disegarkan tepat sekali setelah giliran selesai, termasuk bila panggilan sudah
+    // diakhiri selagi menunggu jawaban. Giliran yang gagal selalu menyegarkan: server mungkin sudah menjalankan
+    // Aksi Tertunda (uang berpindah) sebelum gagal dan membalas dengan error JSON.
+    replyPromise.then(
+      () => {
+        if (segar) segarkanData();
+      },
+      () => segarkanData()
+    );
 
     // Seperti CS sungguhan: kalau jawabannya belum siap, agent bilang sedang mengecek.
     let waited = false;

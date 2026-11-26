@@ -33,7 +33,8 @@ const sse = (obj) => enc.encode(`data: ${JSON.stringify(obj)}\n\n`);
 const penanda = (m) => m.role === 'assistant' && m.content === '' && !m.tool;
 
 // Meneruskan stream Netra ke browser apa adanya sambil mengumpulkan teks, usage, dan tool call.
-async function teruskan(upstream, kirim) {
+// { lewatkanError: true }: potongan yang berisi event error tidak diteruskan (dipakai di putaran 2, diganti teks cadangan).
+async function teruskan(upstream, kirim, { lewatkanError = false } = {}) {
   const parser = createSseParser();
   const alat = createToolCallCollector();
   const dec = new TextDecoder();
@@ -43,13 +44,14 @@ async function teruskan(upstream, kirim) {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      kirim(value);
+      let adaError = false;
       for (const ev of parser.push(dec.decode(value, { stream: true }))) {
         if (ev.text) r.text += ev.text;
         if (ev.usage) r.usage = ev.usage;
-        if (ev.error) r.error = true;
+        if (ev.error) adaError = r.error = true;
         if (ev.toolCall) alat.push(ev.toolCall);
       }
+      if (!(lewatkanError && adaError)) kirim(value);
     }
   } catch {
     // Browser menekan "hentikan" atau koneksi putus: hentikan bacaan dari Netra, simpan teks yang sudah diterima.
@@ -108,15 +110,18 @@ export async function POST(req) {
     .insert({ session_id: sessionId, user_id: user.id, role: 'assistant', content: '' })
     .select('id')
     .single();
+  // Membuang giliran yang gagal. Jika jawaban Nasabah sudah memutuskan Aksi Tertunda (sisipan tidak kosong),
+  // uang mungkin sudah berpindah dan baris PEMBARUAN sudah tersimpan: pesan Nasabah dipertahankan supaya
+  // riwayat tetap berisi "ya" sebelum PEMBARUAN; hanya penanda balasan yang dihapus.
+  const buangGiliran = (placeholderId) => {
+    const ids = [sisipan.length ? null : userMsg.id, placeholderId].filter((id) => id != null);
+    return ids.length ? admin.from('chat_messages').delete().in('id', ids) : Promise.resolve();
+  };
   if (phErr) {
-    await admin.from('chat_messages').delete().eq('id', userMsg.id);
+    await buangGiliran(null);
     return fail(500, phErr.message);
   }
-  const dropTurn = () =>
-    admin
-      .from('chat_messages')
-      .delete()
-      .in('id', [userMsg.id, placeholder.id].filter((id) => id != null));
+  const dropTurn = () => buangGiliran(placeholder.id);
 
   const susun = (rows) => buildPromptMessages({ session, history: rows.filter((m) => !penanda(m)), mode });
   const { data: rows, error: histErr } = await admin.from('chat_messages').select(KOLOM_RIWAYAT).eq('session_id', sessionId).order('id');
@@ -199,6 +204,8 @@ export async function POST(req) {
           console.error('[api/chat] hasil tool gagal disimpan:', trErr.message);
           await admin.from('pending_actions').update({ status: 'batal', diputuskan_at: new Date().toISOString() }).eq('session_id', sessionId).eq('status', 'menunggu');
           await dropTurn();
+          // Teks putaran 1 mungkin sudah tampil: beri tahu browser bahwa giliran ini gagal, bukan selesai.
+          kirim(sse({ error: { message: 'Gagal menyimpan hasil. Coba kirim ulang.' } }));
           return;
         }
         for (const row of [...toolRows].sort((a, b) => a.id - b.id)) if (row.card) kirim(sse({ nusa: { pesan: row } }));
@@ -210,7 +217,7 @@ export async function POST(req) {
           const { data: rows2, error: h2Err } = await admin.from('chat_messages').select(KOLOM_RIWAYAT).eq('session_id', sessionId).order('id');
           if (h2Err) throw new Error(h2Err.message);
           const up2 = await panggilNetra(susun(rows2), { stream: true, signal: req.signal, tools });
-          if (up2.ok && up2.body) r2 = await teruskan(up2, kirim);
+          if (up2.ok && up2.body) r2 = await teruskan(up2, kirim, { lewatkanError: true });
           else console.error('[api/chat] putaran kedua: HTTP', up2.status);
         } catch (e) {
           console.error('[api/chat] putaran kedua gagal:', e && e.message);
@@ -219,7 +226,7 @@ export async function POST(req) {
         let teks = !r2.error && r2.text.trim() ? r2.text : '';
         if (!teks) {
           teks = CADANGAN;
-          kirim(sse({ choices: [{ delta: { content: (r2.text ? '\n' : '') + CADANGAN } }] }));
+          kirim(sse({ choices: [{ delta: { content: CADANGAN } }] }));
         }
         const isi = { content: teks, usage: r2.usage };
         const { error: s2Err } = ph2
