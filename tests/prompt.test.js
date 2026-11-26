@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SYSTEM_PROMPT_VERSION, buildPromptMessages, systemPromptFor } from '../lib/prompt';
+import { SYSTEM_PROMPT_VERSION, buildPromptMessages, systemPromptFor, toolsFor } from '../lib/prompt';
 import { buildSnapshot, renderSnapshot } from '../lib/snapshot';
 import { CALL_RULES } from '../lib/speech';
 import { snapshotInput } from './fixtures';
@@ -59,8 +59,7 @@ describe('systemPromptFor', () => {
 });
 
 describe('versi prompt dan kartu', () => {
-  it('versi terbaru adalah 2, dan v1 tetap tersedia tanpa perubahan', () => {
-    expect(SYSTEM_PROMPT_VERSION).toBe(2);
+  it('v1 tetap tersedia tanpa perubahan', () => {
     expect(systemPromptFor(1)).toContain('Jangan pernah mengarang nominal: sebut angka hanya jika tertulis di data. Jangan menawarkan atau merekomendasikan produk investasi tertentu.');
     expect(systemPromptFor(1).split('\n')).toHaveLength(13);
   });
@@ -76,5 +75,41 @@ describe('versi prompt dan kartu', () => {
     const history = [m(1, 'kartu', 'KARTU RENCANA ALOKASI (ditampilkan ke nasabah; semua angka dihitung oleh Aturan Alokasi)\nGaji masuk: Rp 1.000', '2026-11-24T07:12:00Z')];
     const p = buildPromptMessages({ session: { ...session, system_prompt_version: 2 }, history, mode: 'text' });
     expect(p[2]).toEqual({ role: 'system', content: history[0].content });
+  });
+});
+
+describe('prompt v3 dengan tool', () => {
+  const s3 = { system_prompt_version: 3, snapshot: buildSnapshot(snapshotInput) };
+  const calls = [{ id: 'call_1', name: 'catat_pengeluaran', arguments: '{"barang":"Bakso","nominal":25000,"kategori":"jajan"}' }];
+  const riwayat = [
+    { id: 1, role: 'user', content: 'tadi jajan bakso 25 ribu', created_at: '2026-11-24T07:12:00Z' },
+    { id: 2, role: 'assistant', content: '', tool: { calls }, created_at: '2026-11-24T07:12:01Z' },
+    { id: 3, role: 'tool', content: '{"status":"menunggu_konfirmasi"}', tool: { id: 'call_1', name: 'catat_pengeluaran' }, created_at: '2026-11-24T07:12:02Z' },
+    { id: 4, role: 'assistant', content: 'Catat Rp 25.000 untuk Bakso?', created_at: '2026-11-24T07:12:03Z' }
+  ];
+
+  it('assistant dengan tool call dan hasil tool dirender format OpenAI', () => {
+    const p = buildPromptMessages({ session: s3, history: riwayat });
+    expect(p[3]).toEqual({
+      role: 'assistant',
+      content: '',
+      tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'catat_pengeluaran', arguments: calls[0].arguments } }]
+    });
+    expect(p[4]).toEqual({ role: 'tool', tool_call_id: 'call_1', content: '{"status":"menunggu_konfirmasi"}' });
+    expect(p[5]).toEqual({ role: 'assistant', content: 'Catat Rp 25.000 untuk Bakso?' });
+  });
+
+  it('versi 3 punya tool, versi lama tidak', () => {
+    expect(SYSTEM_PROMPT_VERSION).toBe(3);
+    expect(toolsFor(3).map((t) => t.function.name)).toEqual(['catat_pengeluaran', 'minta_ringkasan']);
+    expect(toolsFor(1)).toBeNull();
+    expect(toolsFor(2)).toBeNull();
+  });
+
+  it('teks system prompt v1 dan v2 tidak berubah (prefix sesi lama)', () => {
+    expect(systemPromptFor(1)).toMatch(/^Kamu adalah Agent Nusa, asisten virtual customer service Bank Nusa \(bank fiktif untuk demo\)\.\n/);
+    expect(systemPromptFor(2)).toContain('Angka Rencana Alokasi dihitung oleh Aturan Alokasi bank');
+    expect(systemPromptFor(2)).not.toContain('catat_pengeluaran');
+    expect(systemPromptFor(3)).toContain('catat_pengeluaran');
   });
 });
