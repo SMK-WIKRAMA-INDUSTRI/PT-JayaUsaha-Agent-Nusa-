@@ -189,6 +189,19 @@ Kartu (Rencana, Catatan Pengeluaran, Ringkasan, Penawaran, Pembelian Demo, Lapor
 - Klien menganggap satu giliran selesai saat stream ditutup server (bukan saat `[DONE]`), karena server baru menutup stream setelah balasan agent tersimpan. Ini menjaga urutan riwayat = urutan percakapan.
 - Begitu pesan Nasabah disimpan, server langsung menyisipkan baris balasan agent kosong sebagai penanda urutan, lalu mengisinya setelah stream selesai (atau menghapus keduanya bila gagal/kosong). Baris kosong tidak pernah ikut ke prompt maupun ke tampilan.
 
+### 7.2 Keputusan pelaksanaan Tahap 2
+
+- **Kartu** disimpan sebagai `chat_messages.role = 'kartu'` dengan `card = { jenis, plan_id }`. Teks kartu di prompt dibekukan saat disisipkan. Status terbaru dibaca UI dari `allocation_plans`, dan perubahannya masuk sebagai pesan `pembaruan`.
+- Di sesi yang dimulai agent, kartu Rencana disimpan **sebelum** sapaan agent, karena model butuh isi kartu untuk menjelaskannya. Prompt yang berakhir dengan pesan `system` menghasilkan teks lewat Netra (bagian 4a), jadi tidak perlu pesan `user` sintetis.
+- Edit kartu tidak disimpan terpisah: `POST /api/plans/:id/apply` menerima `{ ubah }`, server menghitung ulang dengan `sesuaikanRincian` (Keinginan menyerap selisih), lalu menerapkannya. `PATCH /api/plans/:id` tidak dibuat.
+- Kantong dibuat saat Rencana pertama kali diterapkan, tidak saat register.
+- Kedaluwarsa 7 hari dicek setiap kali Rencana dibaca atau diputuskan (tanpa cron).
+- Membuka notifikasi yang sama mengembalikan sesi yang sama (indeks unik `chat_sessions.plan_id`).
+- Jika pembuatan Rencana gagal setelah Gaji tercatat, Gaji tetap tercatat tanpa Rencana (dicatat di log), supaya tombol tidak diulang dan Gaji tercatat dua kali.
+- **Reset data demo** menghapus semua data kecuali akun login dan profil, termasuk Goal dari onboarding.
+- System prompt v2 dipakai sesi baru. Sesi lama tetap memakai v1.
+- Snapshot sesi baru memuat Saldo Bebas dan Kantong. Snapshot lama tanpa field `kantong` tetap dirender sama persis seperti Tahap 1.
+
 ## 8. Skema database (Supabase / Postgres)
 
 Semua nominal bertipe `bigint` dalam rupiah. Semua tabel milik Nasabah memiliki `user_id uuid references auth.users` dan policy RLS `select using (user_id = auth.uid())`.
@@ -241,8 +254,7 @@ Migrasi disimpan di `supabase/migrations/`. Seed katalog (3 Institusi beserta Pr
 | `GET /api/sessions/:id` | Mengambil riwayat sesi untuk dilanjutkan |
 | `POST /api/demo/gaji` | Mensimulasikan Gaji masuk lewat jalur ingest yang sama |
 | `POST /api/notifications/:id/open` | Membuat sesi baru yang dimulai agent untuk Notifikasi Gajian |
-| `PATCH /api/plans/:id` | Mengedit rincian (dihitung ulang oleh `lib/alokasi.js`) |
-| `POST /api/plans/:id/apply` · `/ignore` | Menerapkan atau mengabaikan Rencana |
+| `POST /api/plans/:id/apply` · `/ignore` | Menerapkan Rencana (body `{ ubah }` dari kartu, dihitung ulang server dengan `lib/alokasi.js`) atau mengabaikannya |
 | `POST /api/offers/:id/click` | Mengubah status Penawaran menjadi `diklik` |
 | `PATCH /api/actions/:id` | Mengubah nominal Aksi Tertunda Pembelian Demo dari kartu (divalidasi minimal pembelian dan Saldo Bebas) |
 | `POST /api/actions/:id/confirm` · `/cancel` | Menjalankan atau membatalkan Aksi Tertunda dari tombol kartu. Konfirmasi lewat ucapan "ya" ditangani `/api/chat`. |
