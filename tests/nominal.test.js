@@ -19,9 +19,20 @@ describe('cariNominal', () => {
     ['setengah juta', 500000],
     ['parkir seribu', 1000],
     ['satu juta dua ratus ribu', 1200000],
-    ['250 rebu', 250000]
+    ['250 rebu', 250000],
+    ['satu setengah juta', 1500000],
+    ['dua setengah juta', 2500000],
+    ['dua juta setengah', 2500000],
+    ['satu juta setengah', 1500000],
+    ['satu koma lima juta', 1500000],
+    ['dua koma lima juta', 2500000]
   ])('%s -> %i', (teks, n) => {
     expect(cariNominal(teks)).toContain(n);
+  });
+
+  it('"satu setengah juta" tidak menghasilkan kandidat 500000', () => {
+    expect(cariNominal('sepatu satu setengah juta')).not.toContain(500000);
+    expect(cariNominal('sepatu satu setengah juta')).toContain(1500000);
   });
 
   it('menggabungkan "1 juta 200 ribu"', () => {
