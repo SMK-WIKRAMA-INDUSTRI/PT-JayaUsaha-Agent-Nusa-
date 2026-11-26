@@ -1023,7 +1023,7 @@ export default function Page() {
               <PhoneIcon />
               <span className="hide-sm">Telepon</span>
             </button>
-            <button type="button" className="btn ghost" onClick={callAgent}>
+            <button type="button" className="btn ghost" aria-label="Hubungi agen" onClick={callAgent}>
               <HeadsetIcon />
               <span className="hide-sm">Hubungi agen</span>
             </button>

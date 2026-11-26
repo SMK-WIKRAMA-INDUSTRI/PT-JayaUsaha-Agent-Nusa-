@@ -274,3 +274,13 @@ a.nav-item{text-decoration:none}
 .demo-note{margin:8px 0;font-size:12px;color:var(--txt2)}
 .demo-actions{display:flex;flex-wrap:wrap;gap:8px}
 
+/* Header: lonceng menambah lebar; pemilih sesi yang menyusut, judul tidak tertimpa */
+.chat-title{min-width:96px}
+@media (max-width:1500px){.chat-head .hide-sm{display:none}}
+.chat-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.session-pick{flex:0 1 190px;min-width:130px;text-overflow:ellipsis}
+@media (max-width:760px){
+  .chat-head{flex-wrap:wrap;row-gap:10px}
+  .chat-title{flex:1 1 calc(100% - 60px)}
+  .session-pick{flex:1 1 auto;min-width:0;max-width:none}
+}
