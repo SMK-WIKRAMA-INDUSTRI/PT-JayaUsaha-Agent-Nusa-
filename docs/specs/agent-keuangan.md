@@ -1,17 +1,21 @@
 # Spec: Agent Nusa sebagai Pendamping Keuangan
 
-Status: disetujui lewat sesi grilling, 24 Nov 2026
+Status: disetujui lewat sesi grilling, 24 Nov 2026. Diperluas 26 Nov 2026 (Catatan Pengeluaran, Ringkasan Bulanan, Pembelian Demo, Laporan Portofolio, Panel Demo).
 Istilah: lihat [CONTEXT.md](../../CONTEXT.md). Keputusan arsitektur: lihat [docs/adr](../adr).
 
 ## 1. Latar belakang
 
 Saat ini Agent Nusa adalah chatbot customer service demo. Data nasabahnya hardcode di `lib/data.js`, riwayat chat dan API key disimpan di `localStorage`, dan browser menyusun prompt sendiri lalu mengirimnya ke Netra Runtime (`deepseek/deepseek-v4.1-flash`). Selain itu, system prompt yang sekarang melarang nasihat investasi.
 
-Fitur ini mengubah agent menjadi pendamping keuangan dengan tiga kemampuan:
+Fitur ini mengubah agent menjadi pendamping keuangan dengan lima kemampuan:
 
 1. **Memahami kondisi keuangan Nasabah** (saldo, Transaksi, Pengeluaran Bulanan, Goal), lalu menjelaskannya.
 2. **Menyusun Rencana Alokasi** setiap kali Gaji masuk, kemudian mengajak Nasabah menerapkannya ke Kantong.
-3. **Menawarkan Produk** dari Institusi (deposito, reksadana, saham, crypto) pada Momen Penawaran. Ini menjadi sumber nilai bisnis bagi Institusi.
+3. **Mencatat pengeluaran** yang diceritakan Nasabah lewat chat, suara, atau telepon, lalu memberi **Ringkasan Bulanan** berstatus Hemat, Aman, atau Boros beserta sarannya.
+4. **Menawarkan Produk** dari Institusi (deposito, reksadana, reksadana properti, saham, crypto) pada Momen Penawaran, lalu menjalankan **Pembelian Demo** setelah Nasabah mengonfirmasi nominalnya. Ini menjadi sumber nilai bisnis bagi Institusi.
+5. **Melaporkan Kepemilikan** lewat Laporan Portofolio dengan valuasi dummy.
+
+Untuk demo, **Panel Demo** menyediakan tombol untuk mensimulasikan kejadian (Gaji masuk, belanja, hasil investasi) dan mengembalikan data ke kondisi awal.
 
 ## 2. Tujuan dan non-tujuan
 
@@ -19,18 +23,22 @@ Fitur ini mengubah agent menjadi pendamping keuangan dengan tiga kemampuan:
 - Nasabah bisa register, login, menyelesaikan onboarding, dan langsung punya rekening demo.
 - Saat Gaji masuk, Nasabah menerima Notifikasi Gajian. Notifikasi itu membuka Sesi Percakapan baru yang dimulai oleh agent dan langsung membawa kartu Rencana Alokasi.
 - Nasabah bisa mengedit Rencana Alokasi lewat kartu, lalu menerapkannya sehingga dana pos yang menabung masuk ke Kantong.
-- Penawaran Produk muncul hanya pada Momen Penawaran, sesuai Profil Risiko, dan bisa berlanjut menjadi Lead dengan persetujuan eksplisit.
+- Nasabah bisa menceritakan pengeluarannya ("tadi jajan bakso 25 ribu") lewat chat, suara, atau telepon. Setelah dikonfirmasi, pengeluaran itu menjadi Transaksi dan saldo berkurang.
+- Nasabah bisa meminta Ringkasan Bulanan. Jika Boros, agent memberi saran berhemat berdasarkan Keinginan terbesar. Jika Hemat atau Aman, agent memuji lalu boleh menawarkan Produk.
+- Penawaran Produk muncul hanya pada Momen Penawaran dan sesuai Profil Risiko. Jika Nasabah mau, agent menyarankan nominal hasil hitungan kode, meminta konfirmasi, lalu menjalankan Pembelian Demo.
+- Nasabah bisa meminta Laporan Portofolio lewat chat, suara, atau telepon.
 - Sesi Percakapan tersimpan di database dan bisa dilanjutkan. Prompt disusun dengan prefix yang stabil supaya context caching DeepSeek bisa kena.
 
 **Non-tujuan (MVP)**
-- Integrasi core banking sungguhan, transfer nyata, atau pembelian Produk sungguhan.
-- Mengirim Lead ke sistem Institusi. Lead hanya disimpan.
-- Produk properti.
+- Integrasi core banking sungguhan, transfer nyata, atau pembelian Produk sungguhan. Pembelian Demo hanya mengubah buku besar demo.
+- Lead dan pengiriman data Nasabah ke Institusi ([ADR 0007](../adr/0007-uang-berubah-hanya-setelah-konfirmasi.md)).
+- Pencairan atau penjualan Kepemilikan.
+- Properti selain satu Produk reksadana properti.
 - Deteksi Gaji dengan heuristik. Di MVP, Gaji dikenali hanya dari kategori `payroll`.
 - Push notification atau email.
 - Mode tamu. Riwayat lama di `localStorage` juga tidak dimigrasi.
 - Pilihan persona demo.
-- Tool/function calling.
+- Tool calling yang langsung menulis data. Tool hanya dipakai untuk mengenali niat dan mengambil data ([ADR 0006](../adr/0006-tool-calling-hanya-untuk-mengenali-niat.md)).
 
 ## 3. Prinsip yang tidak boleh dilanggar
 
@@ -40,6 +48,7 @@ Fitur ini mengubah agent menjadi pendamping keuangan dengan tiga kemampuan:
 4. **Isolasi data per Nasabah ditegakkan oleh RLS** ([ADR 0001](../adr/0001-supabase-sebagai-database-dan-auth.md)).
 5. **Prefix prompt harus stabil** ([ADR 0003](../adr/0003-sesi-disimpan-dengan-snapshot-demi-prefix-cache.md)). Lihat bagian 7.
 6. Agent tetap tidak pernah meminta PIN, password, CVV, atau OTP, dan tidak pernah melakukan transaksi nyata.
+7. **Uang dari percakapan hanya berubah setelah dikonfirmasi** ([ADR 0007](../adr/0007-uang-berubah-hanya-setelah-konfirmasi.md)). Catatan Pengeluaran dan Pembelian Demo selalu lewat Aksi Tertunda. Nominal Catatan Pengeluaran harus ada di ucapan Nasabah, sedangkan nominal saran Pembelian Demo dihitung kode.
 
 ## 4. Context caching DeepSeek
 
@@ -59,6 +68,10 @@ Konsekuensinya bagi kita:
 - **Risiko yang harus diverifikasi lebih dulu:** apakah proxy Netra Runtime meneruskan caching ke DeepSeek dan mengembalikan field cache tersebut. Jika tidak, fitur tetap berjalan, hanya tanpa penghematan biaya.
 
 > **Hasil verifikasi lewat Netra (25 Nov 2026, `scripts/cek-cache-netra.mjs`):** caching **berfungsi**. Prompt ~2.050 token dengan prefix sama: permintaan ke-1 dan ke-2 `cached_tokens = 0`, permintaan ke-3 `cached_tokens = 1.792` (sesuai aturan DeepSeek: prefix bersama dipersist setelah permintaan ke-2). Netra mengembalikan field cache dalam format OpenAI, yaitu `usage.prompt_tokens_details.cached_tokens` (bukan `prompt_cache_hit_tokens`). `stream_options.include_usage` diterima, dan `usage` ikut di chunk terakhir stream.
+
+## 4a. Tool calling lewat Netra
+
+Belum diverifikasi. Diisi pada langkah pertama Tahap 2.
 
 ## 5. Alur utama
 
@@ -86,14 +99,46 @@ Saat register, sistem otomatis membuat rekening, Transaksi "saldo awal", 3 bulan
 
 ### 5.4 Penawaran Produk
 - Penawaran hanya muncul pada **Momen Penawaran**:
-  1. Nasabah bertanya sendiri.
+  1. Nasabah bertanya sendiri, atau menyatakan ingin berinvestasi.
   2. Pos Investasi dari Rencana yang sudah diterapkan.
   3. Dana Darurat baru mencapai target.
-- Momen 2 dan 3 adalah penawaran **tanpa diminta**. Batasnya maksimal 1 per minggu per Nasabah, dan tidak muncul sama sekali jika `profiles.tawaran_proaktif = false`.
+  4. Ringkasan Bulanan berstatus Hemat atau Aman ("ringkasan sehat").
+- Momen 2, 3, dan 4 adalah penawaran **tanpa diminta**. Batasnya maksimal 1 per minggu per Nasabah, dan tidak muncul sama sekali jika `profiles.tawaran_proaktif = false`.
 - Filter Profil Risiko: tingkat risiko Produk tidak boleh melebihi batas profil. Jika Profil Risiko kosong, hanya deposito dan reksadana pasar uang yang boleh ditawarkan.
-- Kartu Penawaran selalu memuat label **"Promosi"**, nama Institusi, imbal hasil indikatif, tingkat risiko, dan disclaimer.
-- Status penawaran berjalan dari `ditampilkan` ke `diklik` ke `tertarik`. Untuk "Saya tertarik", tampilkan dialog persetujuan yang menyebut nama Institusi dan data apa saja yang dibagikan. Jika Nasabah setuju, baris `leads` dibuat.
-- Untuk momen 1 di MVP, server mendeteksi niat bertanya produk secara sederhana (kata kunci), lalu menyisipkan kartu Produk hasil filter.
+- Kartu Penawaran selalu memuat label **"Promosi"**, nama Institusi, imbal hasil indikatif, tingkat risiko, minimal pembelian, dan disclaimer.
+- Status penawaran berjalan dari `ditampilkan` ke `diklik` ke `dibeli`.
+- Niat dikenali lewat tool calling ([ADR 0006](../adr/0006-tool-calling-hanya-untuk-mengenali-niat.md)), lalu server menyisipkan kartu Produk hasil filter.
+
+### 5.5 Catatan Pengeluaran
+1. Nasabah bercerita lewat chat, suara, atau telepon, misalnya "tadi abis jajan bakso 25 ribu".
+2. Model memanggil tool `catat_pengeluaran { barang, nominal, kategori }`. Server memeriksa bahwa nominal tersebut memang ada di ucapan Nasabah (`lib/nominal.js` mengenali "25rb", "25 ribu", "Rp25.000", "1,5 juta", dan sejenisnya). Jika tidak ada, agent menanyakan nominalnya dan tidak ada Aksi Tertunda yang dibuat.
+3. Server membuat Aksi Tertunda dan menyisipkan kartu "Catat Rp 25.000 – Bakso (Jajan)? [Catat] [Batal]". Agent mengulang nominalnya dan meminta konfirmasi. Di mode telepon, agent mengucapkannya.
+4. Nasabah mengonfirmasi lewat tombol atau jawaban "ya/benar/oke" di giliran berikutnya. Server menjalankan `ingest_transaksi` (arah `keluar`, kanal `catatan`, divalidasi terhadap Saldo Bebas), lalu menambahkan pesan `pembaruan` berisi saldo terbaru di akhir sesi.
+5. Jika Nasabah menolak, membahas hal lain, atau tidak menjawab dalam 30 menit, aksi menjadi `batal`.
+
+### 5.6 Ringkasan Bulanan
+1. Nasabah meminta ringkasan ("pengeluaranku bulan ini gimana?"), dan model memanggil tool `minta_ringkasan`.
+2. `lib/ringkasan.js` (fungsi murni) menghitung total per Kategori Belanja bulan berjalan (WIB), Batas Belanja, batas pro-rata (`Batas Belanja × hari berjalan / jumlah hari bulan ini`), dan Status Belanja: **Hemat** jika realisasi ≤ 80% batas pro-rata, **Aman** jika ≤ 100%, dan **Boros** jika lebih dari itu. Pindahan ke Kantong dan Pembelian Demo tidak dihitung sebagai belanja.
+3. Server menyisipkan kartu Ringkasan. Agent menjelaskannya:
+   - **Boros**: menyebut Keinginan terbesar dan menyarankan cara berhemat sampai akhir bulan. Tidak ada Penawaran.
+   - **Hemat atau Aman**: memuji pengelolaan belanja Nasabah, lalu jika Momen Penawaran 4 lolos batas mingguan dan sakelar, server menyisipkan kartu Penawaran.
+
+### 5.7 Pembelian Demo dan Laporan Portofolio
+1. Nasabah menyatakan ingin berinvestasi, misalnya "yaudah aku mau coba reksadana", dan model memanggil tool `mau_investasi { jenis_produk? }`.
+2. Server memilih Produk hasil filter Profil Risiko, lalu menghitung **nominal saran** dengan `lib/investasi.js`: `min(pos Investasi Rencana terakhir yang diterapkan, Saldo Bebas − 1× Pengeluaran Bulanan)`, dibulatkan ke bawah ke kelipatan 10.000, dan tidak kurang dari minimal pembelian Produk. Jika Saldo Bebas tidak cukup untuk minimal pembelian, agent menjelaskan bahwa saat ini belum disarankan berinvestasi.
+3. Server membuat Aksi Tertunda dengan kartu Pembelian Demo (Produk, nominal saran yang bisa diedit, label "Promosi", dan disclaimer). Agent menyebut nominal saran dan meminta Nasabah memastikan jumlah yang ingin dikeluarkan.
+4. Setelah dikonfirmasi, `beli_produk_demo` mencatat Transaksi keluar (kategori `investasi`), membuat Kepemilikan, dan mengubah status Penawaran menjadi `dibeli`, semuanya atomik. Server lalu menambahkan pesan `pembaruan`.
+5. Nasabah bisa meminta laporan ("investasiku gimana?"), dan model memanggil `minta_laporan`. Server menyisipkan kartu Laporan Portofolio (modal, nilai terkini, untung atau rugi per Kepemilikan dan total) dari valuasi terakhir.
+6. Valuasi berasal dari tombol Panel Demo **"Simulasikan 1 bulan hasil investasi"**. Return per bulan per jenis Produk dihitung oleh `lib/valuasi.js` dengan acak yang bisa diulang (seed = id Kepemilikan + nomor bulan): deposito dan reksadana pasar uang stabil positif, sedangkan reksadana campuran, saham, reksadana properti, dan crypto bisa positif atau negatif.
+
+### 5.8 Panel Demo
+Satu laci di `/chat`. Semua tombol lewat jalur yang sama dengan kejadian sungguhan (`ingest_transaksi`, notifikasi, dan sebagainya):
+1. **Gaji masuk**
+2. **Belanja acak**: satu Transaksi QRIS keluar dengan Kategori Belanja dan nominal acak yang wajar.
+3. **Skenario boros**: beberapa Transaksi Jajan, Belanja, dan Hiburan sekaligus, sehingga Status Belanja menjadi Boros.
+4. **Simulasikan 1 bulan hasil investasi**
+5. **Penuhi Dana Darurat**: memindahkan Saldo Bebas ke Kantong Dana Darurat sampai target, sehingga memicu Momen Penawaran 3.
+6. **Reset data demo**: menghapus semua data milik Nasabah (kecuali akun dan profil), lalu menjalankan ulang `seed_nasabah_baru`.
 
 ## 6. Aturan Alokasi (`lib/alokasi.js`, fungsi murni)
 
@@ -110,7 +155,7 @@ Urutan pengisian:
 Pembulatan ke ribuan rupiah ke bawah, dan selisih pembulatan masuk ke Keinginan.
 Kasus tepi yang wajib diuji: Gaji lebih kecil dari Pengeluaran Bulanan (semua untuk Wajib, pos lain 0), Dana Darurat sudah penuh, tidak punya Goal, Goal yang tenggatnya sudah lewat, dan persentase yang diubah Nasabah.
 
-> Nilai default `persen_dana_darurat` (usulan 20%) dan `persen_investasi` (usulan 50%) belum dibahas secara khusus saat grilling. Lihat bagian 12.
+Nilai default (dikonfirmasi 26 Nov 2026): `persen_dana_darurat` 20%, `persen_investasi` 50%, `persen_sosial` 0%.
 
 ## 7. Susunan prompt (disusun oleh server)
 
@@ -124,6 +169,8 @@ Browser hanya mengirim `{ session_id, message }`. Server menyusun `messages` den
 Perubahan di tengah sesi, misalnya Rencana diterapkan atau Gaji baru masuk, ditambahkan sebagai pesan baru di akhir. Snapshot tidak diubah.
 Mode suara dan telepon (`CALL_RULES`) memakai jalur yang sama. `CALL_RULES` ditambahkan sebagai pesan `system` setelah snapshot, sehingga prefix sistem dan snapshot tetap sama dengan sesi teks.
 `chat_sessions.system_prompt_version` mencatat versi prompt yang dipakai. Jika versinya berubah, sesi lama tetap memakai versinya sendiri agar prefix-nya tidak berubah.
+Definisi tool ([ADR 0006](../adr/0006-tool-calling-hanya-untuk-mengenali-niat.md)) bersifat statis dan ikut berversi bersama system prompt (`TOOLS_V{n}`), sehingga tidak mengubah prefix. Panggilan tool dan hasilnya disimpan sebagai pesan di riwayat, lalu dirender ulang secara deterministik pada permintaan berikutnya.
+Kartu (Rencana, Catatan Pengeluaran, Ringkasan, Penawaran, Pembelian Demo, Laporan Portofolio) disimpan di `chat_messages.card`, lalu dirender ke prompt sebagai ringkasan teks yang deterministik dengan angka dari kode.
 
 ### 7.1 Keputusan pelaksanaan Tahap 1
 
@@ -143,32 +190,40 @@ Semua nominal bertipe `bigint` dalam rupiah. Semua tabel milik Nasabah memiliki 
 |---|---|---|
 | `profiles` | `user_id` PK, `nama_panggilan`, `pekerjaan`, `tanggal_gajian`, `pengeluaran_bulanan_koreksi` (boleh kosong), `profil_risiko` (enum `konservatif`/`moderat`/`agresif`, boleh kosong), `tawaran_proaktif` bool default true, `onboarding_selesai_at` | Nasabah boleh meng-update profilnya sendiri |
 | `accounts` | `id`, `user_id`, `nomor_akhir` | MVP: satu per Nasabah |
-| `transactions` | `id`, `account_id`, `user_id`, `arah` (`masuk`/`keluar`), `nominal`, `kategori` (`payroll`, `saldo_awal`, `tagihan`, `qris`, `transfer`, …), `pihak`, `kanal`, `status`, `waktu` | Buku besar Saldo Total |
+| `transactions` | `id`, `account_id`, `user_id`, `arah` (`masuk`/`keluar`), `nominal`, `kategori` (`payroll`, `saldo_awal`, `tagihan`, `qris`, `transfer`, `investasi`, …), `kategori_belanja` (`makan`/`jajan`/`belanja`/`transportasi`/`tagihan`/`hiburan`/`lainnya`, boleh kosong; diisi untuk Transaksi keluar yang dihitung sebagai belanja), `pihak`, `kanal` (termasuk `catatan` untuk Catatan Pengeluaran), `status`, `waktu` | Buku besar Saldo Total |
 | `goals` | `id`, `user_id`, `nama`, `target`, `tenggat` (boleh kosong), `is_dana_darurat`, `kelipatan_target` (khusus Dana Darurat) | Dana Darurat tidak bisa dihapus |
 | `pockets` | `id`, `user_id`, `jenis` (`dana_darurat`/`goal`/`investasi`/`sosial`), `goal_id` (boleh kosong) | Satu Kantong per Goal |
 | `pocket_movements` | `id`, `pocket_id`, `user_id`, `nominal` (± ), `sumber` (`rencana`/`manual`), `plan_id` (boleh kosong), `waktu` | Buku besar Kantong |
 | `allocation_rules` | `user_id` PK, `persen_dana_darurat`, `persen_sosial`, `persen_investasi` | |
 | `allocation_plans` | `id`, `user_id`, `transaction_id` UNIQUE, `status` (`diusulkan`/`diterapkan`/`diabaikan`), `rincian` jsonb, `kedaluwarsa_at` | Satu Rencana per Gaji |
 | `institutions` | `id`, `nama`, `jenis` | Dibaca publik |
-| `products` | `id`, `institution_id`, `nama`, `jenis` (`deposito`/`reksadana_pu`/`reksadana_pt`/`reksadana_saham`/`saham`/`crypto`), `risiko` 1–5, `minimal_nominal`, `imbal_hasil_indikatif`, `disclaimer` | Dibaca publik |
-| `product_offers` | `id`, `user_id`, `product_id`, `session_id`, `momen` (`ditanya`/`rencana_investasi`/`dana_darurat_penuh`), `status` (`ditampilkan`/`diklik`/`tertarik`), `created_at` | Batas mingguan dihitung dari tabel ini |
-| `leads` | `id`, `offer_id` UNIQUE, `user_id`, `institution_id`, `persetujuan_at`, `data_dibagikan` jsonb | Belum dikirim ke mana pun |
+| `products` | `id`, `institution_id`, `nama`, `jenis` (`deposito`/`reksadana_pu`/`reksadana_pt`/`reksadana_saham`/`reksadana_properti`/`saham`/`crypto`), `risiko` 1–5, `minimal_nominal`, `imbal_hasil_indikatif`, `disclaimer` | Dibaca publik |
+| `product_offers` | `id`, `user_id`, `product_id`, `session_id`, `momen` (`ditanya`/`rencana_investasi`/`dana_darurat_penuh`/`ringkasan_sehat`), `status` (`ditampilkan`/`diklik`/`dibeli`), `created_at` | Batas mingguan dihitung dari tabel ini |
+| `pending_actions` | `id`, `user_id`, `session_id`, `jenis` (`catat_pengeluaran`/`beli_produk`), `data` jsonb, `status` (`menunggu`/`dijalankan`/`batal`), `kedaluwarsa_at`, `created_at` | Paling banyak satu `menunggu` per sesi |
+| `holdings` | `id`, `user_id`, `product_id`, `offer_id` (boleh kosong), `modal`, `transaction_id`, `created_at` | Kepemilikan; tidak bisa dicairkan di MVP |
+| `holding_valuations` | `id`, `holding_id`, `user_id`, `bulan_ke`, `nilai`, `created_at` | Valuasi dummy; nilai terkini = baris terakhir |
 | `chat_sessions` | `id`, `user_id`, `snapshot` jsonb, `system_prompt_version`, `dimulai_oleh` (`agent`/`nasabah`), `plan_id` (boleh kosong), `created_at` | |
-| `chat_messages` | `id`, `session_id`, `user_id`, `role` (`user`/`assistant`/`lampiran`/`pembaruan`), `content`, `card` jsonb (boleh kosong), `usage` jsonb (boleh kosong), `created_at` | |
+| `chat_messages` | `id`, `session_id`, `user_id`, `role` (`user`/`assistant`/`lampiran`/`pembaruan`/`kartu`/`tool`), `content`, `card` jsonb (boleh kosong), `tool` jsonb (boleh kosong: nama tool, argumen, id panggilan), `usage` jsonb (boleh kosong), `created_at` | |
 | `notifications` | `id`, `user_id`, `jenis` (`gajian`), `ref_id`, `dibaca_at` | Realtime aktif |
 
 View untuk saldo: `v_saldo_total` (SUM `transactions` berstatus berhasil), `v_saldo_kantong` (SUM `pocket_movements` per Kantong), dan `v_saldo_bebas` (Saldo Total dikurangi SUM semua Kantong).
 
-**Hak tulis**: browser hanya boleh menulis ke `profiles`, `goals` (selain Dana Darurat), dan `allocation_rules`. Tabel uang, Rencana, Penawaran, Lead, sesi, dan pesan hanya ditulis oleh server lewat fungsi berikut:
+View tambahan: `v_kepemilikan` (modal dan nilai terkini per Kepemilikan).
+
+**Hak tulis**: browser hanya boleh menulis ke `profiles`, `goals` (selain Dana Darurat), dan `allocation_rules`. Tabel uang, Rencana, Penawaran, Aksi Tertunda, Kepemilikan, sesi, dan pesan hanya ditulis oleh server lewat fungsi berikut:
 
 | Fungsi Postgres | Tugas |
 |---|---|
-| `ingest_transaksi(...)` | Mencatat Transaksi. Validasi Saldo Bebas untuk arah keluar. |
+| `ingest_transaksi(...)` | Mencatat Transaksi. Validasi Saldo Bebas untuk arah keluar. Dipakai juga oleh Catatan Pengeluaran dan Panel Demo. |
 | `terapkan_rencana(plan_id, rincian)` | Memastikan status `diusulkan`, menulis semua `pocket_movements`, lalu mengubah status. Semuanya atomik. |
 | `pindah_kantong(dari, ke, nominal)` | Memindahkan dana antar Kantong atau ke dan dari Saldo Bebas, dengan validasi saldo. |
+| `jalankan_aksi(action_id)` | Memastikan status `menunggu` dan belum kedaluwarsa, menjalankan aksinya (`ingest_transaksi` atau `beli_produk_demo`), lalu mengubah status menjadi `dijalankan`. Semuanya atomik. |
+| `beli_produk_demo(user_id, product_id, nominal, offer_id)` | Mencatat Transaksi keluar kategori `investasi`, membuat `holdings` dan valuasi bulan ke-0, lalu mengubah status Penawaran menjadi `dibeli`. |
+| `simulasi_valuasi(user_id, nilai[])` | Menambahkan satu baris valuasi per Kepemilikan. Nilainya dihitung oleh `lib/valuasi.js`. |
+| `reset_demo(user_id)` | Menghapus semua data Nasabah kecuali akun dan profil, lalu menjalankan ulang seed. |
 | `seed_nasabah_baru(user_id)` | Membuat rekening, saldo awal, 3 bulan Transaksi, Dana Darurat, dan aturan default. |
 
-Migrasi disimpan di `supabase/migrations/`. Seed katalog (3 Institusi beserta Produknya) disimpan di `supabase/seed.sql`.
+Migrasi disimpan di `supabase/migrations/`. Seed katalog (3 Institusi beserta Produknya, termasuk satu reksadana properti) disimpan di `supabase/seed.sql`.
 
 ## 9. API (Next.js Route Handlers)
 
@@ -181,7 +236,10 @@ Migrasi disimpan di `supabase/migrations/`. Seed katalog (3 Institusi beserta Pr
 | `POST /api/notifications/:id/open` | Membuat sesi baru yang dimulai agent untuk Notifikasi Gajian |
 | `PATCH /api/plans/:id` | Mengedit rincian (dihitung ulang oleh `lib/alokasi.js`) |
 | `POST /api/plans/:id/apply` · `/ignore` | Menerapkan atau mengabaikan Rencana |
-| `POST /api/offers/:id/click` · `/interest` | Mengubah status Penawaran. `interest` wajib membawa persetujuan. |
+| `POST /api/offers/:id/click` | Mengubah status Penawaran menjadi `diklik` |
+| `PATCH /api/actions/:id` | Mengubah nominal Aksi Tertunda Pembelian Demo dari kartu (divalidasi minimal pembelian dan Saldo Bebas) |
+| `POST /api/actions/:id/confirm` · `/cancel` | Menjalankan atau membatalkan Aksi Tertunda dari tombol kartu. Konfirmasi lewat ucapan "ya" ditangani `/api/chat`. |
+| `POST /api/demo/belanja` · `/boros` · `/valuasi` · `/dana-darurat-penuh` · `/reset` | Tombol Panel Demo, semuanya lewat jalur yang sama dengan kejadian sungguhan |
 
 API key Netra dipindah ke env server `NETRA_API_KEY`. Header `x-api-key` dari browser dihapus. Halaman **Pengaturan AI** tidak lagi bisa dibuka oleh Nasabah (dipindah ke halaman admin atau disembunyikan). Model dan parameter diatur lewat env atau konstanta server.
 
@@ -192,7 +250,7 @@ Env baru: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE
 - `/` (landing): tetap publik.
 - `/login`, `/register`: halaman baru.
 - `/onboarding`: wizard 5 langkah (bagian 5.1).
-- `/chat`: wajib login. Berisi daftar Sesi Percakapan, panel Saldo Total, Saldo Bebas, dan Kantong, panel Transaksi dari DB, lonceng Notifikasi, tombol "Simulasikan gaji masuk", serta kartu Rencana dan Penawaran di dalam chat.
+- `/chat`: wajib login. Berisi daftar Sesi Percakapan, panel Saldo Total, Saldo Bebas, dan Kantong, panel Transaksi dari DB, panel Kepemilikan, lonceng Notifikasi, laci **Panel Demo** (bagian 5.8), serta kartu Rencana, Catatan Pengeluaran, Ringkasan, Penawaran, Pembelian Demo, dan Laporan Portofolio di dalam chat.
 - Pengaturan: profil, Pengeluaran Bulanan, Profil Risiko, persentase Aturan Alokasi, Goal, dan sakelar "tawarkan produk".
 
 ## 11. Tahapan
@@ -207,18 +265,23 @@ Setiap tahap menjadi satu PR yang bisa didemokan.
 - Selesai jika: dua Nasabah berbeda tidak bisa saling melihat data; sesi yang dilanjutkan setelah login ulang memiliki prefix identik dan `usage` tercatat; panel saldo dan Transaksi membaca dari DB.
 
 **Tahap 2: Alokasi**
-- Goal, Kantong, `lib/alokasi.js` beserta unit test (vitest), `ingest_transaksi`, tombol simulasi Gaji, Notifikasi Gajian via Realtime, sesi yang dimulai agent, kartu Rencana yang bisa diedit, `terapkan_rencana`, dan kedaluwarsa 7 hari.
-- Selesai jika: mensimulasikan Gaji memunculkan notifikasi; notifikasi membuka sesi berisi kartu; setelah Rencana diterapkan, Kantong dan Saldo Bebas berubah dengan benar; semua kasus tepi di bagian 6 lulus test.
+- Goal, Kantong, `lib/alokasi.js` beserta unit test (vitest), `ingest_transaksi`, Notifikasi Gajian via Realtime, sesi yang dimulai agent, kartu Rencana yang bisa diedit, `terapkan_rencana`, dan kedaluwarsa 7 hari.
+- Panel Demo versi awal: **Gaji masuk** dan **Reset data demo**.
+- **Langkah pertama:** verifikasi tool calling lewat Netra (`scripts/cek-tools-netra.mjs`), baik non-stream maupun stream, dan pastikan cache tetap kena dengan definisi tool di prompt. Hasilnya menentukan jalur Tahap 3 ([ADR 0006](../adr/0006-tool-calling-hanya-untuk-mengenali-niat.md)).
+- Selesai jika: mensimulasikan Gaji memunculkan notifikasi; notifikasi membuka sesi berisi kartu; setelah Rencana diterapkan, Kantong dan Saldo Bebas berubah dengan benar; semua kasus tepi di bagian 6 lulus test; Reset mengembalikan saldo ke Rp 24.380.500; hasil verifikasi tool calling tercatat di bagian 4a.
 
-**Tahap 3: Penawaran**
-- Seed 3 Institusi (Bank Nusa, Nusa Sekuritas, Nusa Kripto) beserta Produknya, kuesioner Profil Risiko, filter risiko, Momen Penawaran beserta batas mingguan dan sakelar, kartu Penawaran, dialog persetujuan, dan `leads`.
-- Selesai jika: Produk berisiko tinggi tidak pernah muncul untuk Nasabah konservatif atau yang belum mengisi profil; penawaran tanpa diminta tidak muncul lebih dari 1 kali per minggu; Lead tidak terbentuk tanpa persetujuan.
+**Tahap 3: Catatan Pengeluaran dan Ringkasan Bulanan**
+- Kolom `kategori_belanja` (termasuk pemetaan Transaksi seed), `lib/nominal.js`, tool `catat_pengeluaran` dan `minta_ringkasan`, `pending_actions` beserta `jalankan_aksi`, konfirmasi lewat tombol dan ucapan "ya" (chat, suara, telepon), kartu Catatan Pengeluaran dan Ringkasan, `lib/ringkasan.js`, serta tombol Panel Demo **Belanja acak** dan **Skenario boros**.
+- Selesai jika: "tadi beli bakso 25 ribu" menghasilkan kartu dan, setelah "ya", Saldo Total berkurang Rp 25.000; nominal yang tidak disebut Nasabah tidak pernah menjadi Aksi Tertunda; Skenario boros mengubah Status Belanja menjadi Boros; semua kasus tepi `lib/nominal.js` dan `lib/ringkasan.js` lulus test.
+
+**Tahap 4: Penawaran, Pembelian Demo, dan Laporan Portofolio**
+- Seed 3 Institusi (Bank Nusa, Nusa Sekuritas, Nusa Kripto) beserta Produknya (termasuk satu reksadana properti), kuesioner Profil Risiko, filter risiko, Momen Penawaran (termasuk ringkasan sehat) beserta batas mingguan dan sakelar, kartu Penawaran, tool `mau_investasi` dan `minta_laporan`, `lib/investasi.js`, `beli_produk_demo`, `holdings`, `lib/valuasi.js`, kartu Laporan Portofolio, panel Kepemilikan, serta tombol Panel Demo **Simulasikan 1 bulan hasil investasi** dan **Penuhi Dana Darurat**.
+- Selesai jika: Produk berisiko tinggi tidak pernah muncul untuk Nasabah konservatif atau yang belum mengisi profil; penawaran tanpa diminta tidak muncul lebih dari 1 kali per minggu; Pembelian Demo tidak pernah terjadi tanpa konfirmasi; nominal saran sesuai rumus 5.7; laporan menampilkan untung atau rugi yang sama dengan valuasi terakhir.
 
 ## 12. Hal terbuka dan risiko
 
-- **Nilai default persentase** (`persen_dana_darurat` 20%, `persen_investasi` 50%) masih berupa usulan dan perlu dikonfirmasi sebelum Tahap 2.
-- **Isi kuesioner Profil Risiko** (5 pertanyaan dan cara menilainya) perlu disusun sebelum Tahap 3.
-- **Caching lewat Netra** belum terverifikasi (bagian 4).
-- **Regulasi:** ini demo dengan Institusi fiktif. Sebelum dipakai sungguhan, Penawaran Produk dan Lead wajib ditinjau dari sisi aturan OJK tentang pemasaran produk investasi dan UU PDP.
-- **Deteksi niat "bertanya produk"** di MVP memakai kata kunci, sehingga bisa terlewat atau salah tangkap. Ini kandidat untuk tool calling di kemudian hari.
+- **Isi kuesioner Profil Risiko** (5 pertanyaan dan cara menilainya) perlu disusun sebelum Tahap 4.
+- **Tool calling lewat Netra** belum terverifikasi. Jika tidak berfungsi, Tahap 3 dan 4 memakai panggilan AI kedua yang mengembalikan JSON ([ADR 0006](../adr/0006-tool-calling-hanya-untuk-mengenali-niat.md)).
+- **Salah dengar dari suara** bisa menghasilkan nominal yang keliru. Pengamannya adalah konfirmasi lewat Aksi Tertunda, dan agent selalu mengulang nominalnya.
+- **Regulasi:** ini demo dengan Institusi fiktif. Sebelum dipakai sungguhan, Penawaran Produk, saran nominal investasi, dan Pembelian wajib ditinjau dari sisi aturan OJK tentang pemasaran produk investasi dan UU PDP.
 - **Pilihan Supabase cloud untuk development:** project dan key harus dibuat sendiri oleh pemilik repo.
