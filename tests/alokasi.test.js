@@ -85,6 +85,12 @@ describe('hitungAlokasi', () => {
 
   it('menolak Gaji 0 atau negatif', () => {
     expect(() => hitungAlokasi({ ...base, gaji: 0 })).toThrow();
+    expect(() => hitungAlokasi({ ...base, gaji: -5 })).toThrow();
+  });
+
+  it('menolak input tidak lengkap alih-alih menghasilkan NaN', () => {
+    expect(() => hitungAlokasi({ ...base, rules: {} })).toThrow(/tidak lengkap/);
+    expect(() => hitungAlokasi({ ...base, danaDarurat: { target: 1000000 } })).toThrow(/tidak lengkap/);
   });
 });
 
