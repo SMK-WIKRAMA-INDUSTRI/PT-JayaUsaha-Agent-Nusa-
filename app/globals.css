@@ -258,6 +258,19 @@ a.nav-item{text-decoration:none}
 .plan-input{width:140px;min-height:40px;padding:0 10px;border-radius:12px;border:1px solid var(--b-ctrl);background:var(--g-ctrl);color:#fff;font-weight:700;font-size:13.5px;text-align:right}
 .plan-amt{font-weight:800;font-size:13.5px}
 .plan-err{margin:8px 0 0;font-size:12.5px;color:var(--bad)}
+.card-hint{margin:8px 0 0}
+.ring-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+.ring-head .plan-title{margin-bottom:0}
+.ring-status{flex:none;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:800;border:1px solid transparent}
+.ring-status.hemat{color:var(--ok);border-color:currentColor}
+.ring-status.aman{color:#fff;border-color:rgba(255,255,255,.45)}
+.ring-status.boros{color:var(--bad);border-color:currentColor}
+.ring-total{margin:0 0 8px;font-weight:700;font-size:13.5px;display:flex;flex-direction:column;gap:2px}
+.ring-total small{font-weight:500;font-size:11.5px;color:var(--txt2)}
+.ring-bar{height:8px;border-radius:999px;background:rgba(255,255,255,.16);overflow:hidden;margin-bottom:8px}
+.ring-bar span{display:block;height:100%;border-radius:inherit;background:var(--ok)}
+.ring-bar.aman span{background:#fff}
+.ring-bar.boros span{background:var(--bad)}
 .notif{position:relative}
 .notif-btn{position:relative;padding:0 12px}
 .notif-badge{position:absolute;top:4px;right:4px;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--bad);color:#0E2146;font-size:11px;font-weight:800;line-height:18px;text-align:center}
