@@ -9,20 +9,18 @@ import { createAdminClient } from '../../../lib/supabase/admin';
 import { buildPromptMessages } from '../../../lib/prompt';
 import { createSseParser } from '../../../lib/sse';
 import { fail } from '../../../lib/server/http';
+import { gagalNetra, netraSiap, panggilNetra } from '../../../lib/server/netra';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-const BASE = (process.env.NETRA_BASE_URL || 'https://api.netraruntime.com/v1').replace(/\/+$/, '');
-const MODEL = process.env.NETRA_MODEL || 'deepseek/deepseek-v4.1-flash';
 const MAX_MESSAGE = 2000;
 // Riwayat tidak dipotong (memotong dari depan merusak prefix cache). Sesi yang terlalu panjang ditolak.
 const MAX_PROMPT_CHARS = 400000;
 
 export async function POST(req) {
-  const key = process.env.NETRA_API_KEY;
-  if (!key) return fail(500, 'NETRA_API_KEY belum diatur di server.');
+  if (!netraSiap()) return fail(500, 'NETRA_API_KEY belum diatur di server.');
   const { user } = await getUser();
   if (!user) return fail(401, 'Silakan masuk dulu.');
 
@@ -85,20 +83,7 @@ export async function POST(req) {
 
   let upstream;
   try {
-    upstream = await fetch(BASE + '/chat/completions', {
-      method: 'POST',
-      signal: req.signal,
-      headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json', 'X-Netra-Agent': 'agent-nusa-cs' },
-      body: JSON.stringify({
-        model: MODEL,
-        messages,
-        max_tokens: 600,
-        temperature: 0.3,
-        reasoning: { enabled: false },
-        stream: true,
-        stream_options: { include_usage: true }
-      })
-    });
+    upstream = await panggilNetra(messages, { stream: true, signal: req.signal });
   } catch {
     await dropTurn();
     if (req.signal && req.signal.aborted) return new Response(null, { status: 499 });
@@ -107,17 +92,7 @@ export async function POST(req) {
 
   if (!upstream.ok || !upstream.body) {
     await dropTurn();
-    // Status Netra tidak diteruskan apa adanya: 401 dari Netra (key server salah) bukan berarti login Nasabah berakhir.
-    let detail = '';
-    try {
-      const j = await upstream.json();
-      detail = (j && j.error && (j.error.message || j.error)) || '';
-      if (typeof detail !== 'string') detail = JSON.stringify(detail);
-    } catch {
-      /* bukan JSON */
-    }
-    const status = upstream.status === 429 || upstream.status === 402 ? upstream.status : 502;
-    return fail(status, `API Netra menolak permintaan (HTTP ${upstream.status})${detail ? ': ' + detail : ''}.`);
+    return gagalNetra(upstream);
   }
 
   // Teruskan stream ke browser apa adanya, sambil mengumpulkan teks dan usage untuk disimpan.

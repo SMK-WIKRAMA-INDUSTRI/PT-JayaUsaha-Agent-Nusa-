@@ -57,3 +57,24 @@ describe('systemPromptFor', () => {
     expect(systemPromptFor(SYSTEM_PROMPT_VERSION)).not.toMatch(/\b\d{1,2} (Jan|Feb|Mar|Apr|Mei|Jun|Jul|Agu|Sep|Okt|Nov|Des) \d{4}\b/);
   });
 });
+
+describe('versi prompt dan kartu', () => {
+  it('versi terbaru adalah 2, dan v1 tetap tersedia tanpa perubahan', () => {
+    expect(SYSTEM_PROMPT_VERSION).toBe(2);
+    expect(systemPromptFor(1)).toContain('Jangan pernah mengarang nominal: sebut angka hanya jika tertulis di data. Jangan menawarkan atau merekomendasikan produk investasi tertentu.');
+    expect(systemPromptFor(1).split('\n')).toHaveLength(13);
+  });
+
+  it('v2 menjelaskan Kantong, kartu, dan cara mengubah Rencana', () => {
+    const p = systemPromptFor(2);
+    expect(p).toContain('KARTU');
+    expect(p).toContain('Saldo Bebas');
+    expect(p).toContain('Terapkan');
+  });
+
+  it('pesan kartu dirender sebagai system apa adanya', () => {
+    const history = [m(1, 'kartu', 'KARTU RENCANA ALOKASI (ditampilkan ke nasabah; semua angka dihitung oleh Aturan Alokasi)\nGaji masuk: Rp 1.000', '2026-11-24T07:12:00Z')];
+    const p = buildPromptMessages({ session: { ...session, system_prompt_version: 2 }, history, mode: 'text' });
+    expect(p[2]).toEqual({ role: 'system', content: history[0].content });
+  });
+});

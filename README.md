@@ -19,6 +19,9 @@ Landing page dan chatbot customer service untuk bank, dengan tampilan glass, mas
 - Pose maskot berubah mengikuti status (berpikir, bekerja, berhasil, minta maaf, belum terhubung)
 - Data keuangan Nasabah dari database ikut dikirim ke AI sebagai Snapshot Keuangan, sehingga Bantu bisa menjawab pertanyaan seperti "transfer ke Rina belum masuk"
 - Pengingat keamanan: Bantu tidak pernah meminta PIN, password, CVV, atau OTP
+- Saldo Total, Saldo Bebas, dan Kantong (Dana Darurat, Goal, Investasi) di panel kanan
+- **Panel Demo**: tombol **Gaji masuk** dan **Reset data demo**
+- Saat Gaji masuk, lonceng **Notifikasi Gajian** menyala (Supabase Realtime). Membukanya memulai percakapan baru dari agent dengan **kartu Rencana Alokasi** yang bisa diedit, lalu **Terapkan** (dana masuk Kantong) atau **Abaikan**. Angka rencana dihitung oleh `lib/alokasi.js`, bukan oleh AI.
 
 ## Tech stack
 
@@ -86,12 +89,13 @@ npm start
 ## Menyiapkan Supabase dan API key
 
 1. Buat project di supabase.com. Di **Authentication > Sign In / Providers > Email**, matikan **Confirm email** untuk demo.
-2. Jalankan isi `supabase/migrations/20261124000001_fondasi.sql` di **SQL Editor**.
+2. Jalankan isi `supabase/migrations/20261124000001_fondasi.sql` di **SQL Editor**, lalu `supabase/migrations/20261126000001_alokasi.sql` (masing-masing sekali, berurutan).
 3. Salin `.env.example` menjadi `.env.local`, lalu isi URL dan key Supabase serta `NETRA_API_KEY`.
 4. `npm run dev`, buka http://localhost:3000/register, lalu jalani onboarding.
 
 Key Netra sekarang hanya ada di server (`NETRA_API_KEY`). Key Deepgram untuk fitur suara masih diisi di halaman **Pengaturan**.
 Cek apakah context caching DeepSeek lewat Netra bekerja: `node --env-file=.env.local scripts/cek-cache-netra.mjs`.
+Cek apakah tool calling lewat Netra bekerja: `node --env-file=.env.local scripts/cek-tools-netra.mjs`.
 
 ## Deploy ke Vercel
 

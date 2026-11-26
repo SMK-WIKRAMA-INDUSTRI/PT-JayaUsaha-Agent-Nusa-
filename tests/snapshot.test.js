@@ -52,3 +52,43 @@ describe('renderSnapshot', () => {
     expect(renderSnapshot(JSON.parse(JSON.stringify(s)))).toBe(text);
   });
 });
+
+describe('Kantong di snapshot', () => {
+  const kantong = [
+    { nama: 'Investasi', jenis: 'investasi', saldo: 1392000 },
+    { nama: 'Dana Darurat', jenis: 'dana_darurat', saldo: 696000 }
+  ];
+
+  it('snapshot tanpa input kantong tidak memuat Saldo Bebas (kompatibel dengan sesi Tahap 1)', () => {
+    const s = buildSnapshot(snapshotInput);
+    expect(s.kantong).toBeUndefined();
+    expect(s.rekening.saldo_bebas).toBeUndefined();
+    expect(renderSnapshot(s)).not.toContain('Saldo Bebas');
+  });
+
+  it('menghitung Saldo Bebas dan mengurutkan Kantong', () => {
+    const s = buildSnapshot({ ...snapshotInput, kantong });
+    expect(s.rekening).toEqual({ nomor_akhir: '4821', saldo_total: 9500000, saldo_bebas: 7412000 });
+    expect(s.kantong).toEqual([
+      { nama: 'Dana Darurat', jenis: 'dana_darurat', saldo: 696000 },
+      { nama: 'Investasi', jenis: 'investasi', saldo: 1392000 }
+    ]);
+  });
+
+  it('render memuat Saldo Bebas dan isi Kantong tepat setelah baris Rekening', () => {
+    const lines = renderSnapshot(buildSnapshot({ ...snapshotInput, kantong })).split('\n');
+    const i = lines.findIndex((l) => l.startsWith('Rekening:'));
+    expect(lines.slice(i + 1, i + 5)).toEqual([
+      'Saldo Bebas: Rp 7.412.000 (Saldo Total dikurangi isi Kantong; hanya ini yang bisa dipakai)',
+      'Kantong:',
+      '- Dana Darurat: Rp 696.000',
+      '- Investasi: Rp 1.392.000'
+    ]);
+  });
+
+  it('Kantong kosong ditulis "belum ada"', () => {
+    const text = renderSnapshot(buildSnapshot({ ...snapshotInput, kantong: [] }));
+    expect(text).toContain('Saldo Bebas: Rp 9.500.000');
+    expect(text).toContain('Kantong:\n- belum ada');
+  });
+});

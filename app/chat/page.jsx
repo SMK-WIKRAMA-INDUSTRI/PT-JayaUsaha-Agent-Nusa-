@@ -3,7 +3,10 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { CHIPS, DEFAULTS, MAX_CONTEXT, normalizeSettings, rp } from '../../lib/data';
-import { addAttachment, callChat, createSession, getSessionMessages, listSessions } from '../../lib/api';
+import { addAttachment, callChat, createSession, demoGaji, demoReset, getSessionMessages, listSessions, openNotification } from '../../lib/api';
+import RencanaCard from './RencanaCard';
+import NotifBell from './NotifBell';
+import DemoPanel from './DemoPanel';
 import { fmtWaktu } from '../../lib/format';
 import { createClient } from '../../lib/supabase/browser';
 import { extractPdfText } from '../../lib/pdf';
@@ -50,8 +53,14 @@ const writeLS = (k, v) => {
 const fmtClock = (sec) => `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
 // Teks bot yang sedang dibacakan: hanya bagian yang sudah diucapkan yang tampil.
 const visibleText = (m) => (typeof m.shown === 'number' ? m.content.slice(0, m.shown) : m.content);
-// Pesan dari database -> gelembung chat. Lampiran tidak ditampilkan sebagai gelembung.
-const toChat = (rows) => rows.filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => ({ id: 'db' + m.id, role: m.role, content: m.content }));
+// Pesan dari database -> isi chat. Lampiran tidak ditampilkan. Kartu Rencana menjadi komponen, pembaruan menjadi catatan kecil.
+const toChat = (rows) =>
+  rows.flatMap((m) => {
+    if (m.role === 'user' || m.role === 'assistant') return [{ id: 'db' + m.id, role: m.role, content: m.content }];
+    if (m.role === 'kartu' && m.card && m.card.jenis === 'rencana') return [{ id: 'db' + m.id, role: 'card', card: m.card }];
+    if (m.role === 'pembaruan') return [{ id: 'db' + m.id, role: 'note', content: m.content.split('\n')[0] }];
+    return [];
+  });
 // Nama file dari isi lampiran "[Dokumen: nama]\n...".
 const lampiranName = (content) => content.split('\n')[0].replace(/^\[Dokumen: /, '').replace(/\]$/, '');
 // Transaksi dari database -> baris panel riwayat.
@@ -130,6 +139,9 @@ export default function Page() {
   const [sessions, setSessions] = useState([]); // { id, created_at, updated_at, dimulai_oleh }
   const [account, setAccount] = useState(null); // { nomor_akhir, saldo_total, nama }
   const [txRows, setTxRows] = useState([]);
+  const [kantong, setKantong] = useState([]); // [{ pocket_id, nama, jenis, saldo }]
+  const [notifications, setNotifications] = useState([]); // [{ id, isi, dibaca_at, created_at }]
+  const [demoBusy, setDemoBusy] = useState(false);
   const [toastMsg, setToastMsg] = useState('');
   const [documents, setDocuments] = useState([]); // lampiran sesi ini: { id, name, chars }
   const [pdfStatus, setPdfStatus] = useState({ text: '', ok: null, reading: false });
@@ -167,9 +179,24 @@ export default function Page() {
     });
     setSettings(s);
     setDraft(s);
-    loadFinance().catch(() => toast('Data rekening gagal dimuat.'));
     // StrictMode memasang efek dua kali: pemasangan pertama yang sudah dibongkar tidak boleh membuat sesi.
     let cancelled = false;
+    loadFinance().catch(() => toast('Data rekening gagal dimuat.'));
+    loadNotifications().catch(() => {});
+    // Notifikasi Gajian baru dikirim Supabase Realtime (spec 5.2). RLS memastikan hanya notifikasi milik sendiri.
+    const supabase = createClient();
+    let channel = null;
+    supabase.auth.getUser().then(({ data }) => {
+      if (cancelled || !data || !data.user) return;
+      channel = supabase
+        .channel('notifikasi-' + data.user.id)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${data.user.id}` }, (payload) => {
+          const n = payload.new;
+          setNotifications((list) => (list.some((x) => x.id === n.id) ? list : [n, ...list]));
+          toast(n.isi);
+        })
+        .subscribe();
+    });
     (async () => {
       try {
         const list = await listSessions();
@@ -187,6 +214,7 @@ export default function Page() {
     })();
     return () => {
       cancelled = true;
+      if (channel) supabase.removeChannel(channel);
       clearTimeout(poseTimer.current);
       clearTimeout(toastTimer.current);
       clearTimeout(errTimer.current);
@@ -245,14 +273,27 @@ export default function Page() {
   /* ---------- data dari database ---------- */
   const loadFinance = async () => {
     const supabase = createClient();
-    const [{ data: saldo, error: e1 }, { data: tx, error: e2 }, { data: profile, error: e3 }] = await Promise.all([
-      supabase.from('v_saldo_total').select('nomor_akhir, saldo_total').maybeSingle(),
+    const [{ data: saldo, error: e1 }, { data: tx, error: e2 }, { data: profile, error: e3 }, { data: kt, error: e4 }] = await Promise.all([
+      supabase.from('v_saldo_bebas').select('nomor_akhir, saldo_total, saldo_bebas').maybeSingle(),
       supabase.from('transactions').select('id, arah, nominal, pihak, kanal, status, waktu').order('waktu', { ascending: false }).limit(30),
-      supabase.from('profiles').select('nama_panggilan').maybeSingle()
+      supabase.from('profiles').select('nama_panggilan').maybeSingle(),
+      supabase.from('v_saldo_kantong').select('pocket_id, nama, jenis, saldo')
     ]);
-    if (e1 || e2 || e3) throw new Error('Data rekening gagal dimuat.');
+    if (e1 || e2 || e3 || e4) throw new Error('Data rekening gagal dimuat.');
     if (saldo) setAccount({ ...saldo, nama: (profile && profile.nama_panggilan) || 'Nasabah' });
     setTxRows((tx || []).map(toTxRow));
+    const urut = { dana_darurat: 0, goal: 1, investasi: 2, sosial: 3 };
+    setKantong([...(kt || [])].sort((x, y) => (urut[x.jenis] ?? 9) - (urut[y.jenis] ?? 9) || x.nama.localeCompare(y.nama)));
+  };
+
+  const loadNotifications = async () => {
+    const { data, error } = await createClient()
+      .from('notifications')
+      .select('id, isi, dibaca_at, created_at')
+      .order('created_at', { ascending: false })
+      .limit(20);
+    if (error) throw new Error('Notifikasi gagal dimuat.');
+    setNotifications(data || []);
   };
 
   const openSession = async (id) => {
@@ -280,6 +321,68 @@ export default function Page() {
       /* penyimpanan diblokir */
     }
     window.location.href = '/login';
+  };
+
+  const refreshSession = () => {
+    const sid = sessionRef.current;
+    // Saat jawaban masih di-stream, memuat ulang riwayat akan menghapus gelembung yang sedang diisi.
+    if (!sid || abortRef.current) return;
+    openSession(sid).catch(() => {});
+  };
+
+  const afterPlanChange = () => {
+    loadFinance().catch(() => {});
+    refreshSession(); // menampilkan catatan pembaruan Rencana
+  };
+
+  const onDemoGaji = async () => {
+    setDemoBusy(true);
+    try {
+      const res = await demoGaji();
+      await Promise.all([loadFinance(), loadNotifications()]);
+      toast(res.plan_id ? 'Gaji masuk. Buka lonceng notifikasi untuk mengatur pembagiannya.' : 'Gaji masuk, tetapi Rencana Alokasi gagal dibuat.');
+    } catch (e) {
+      toast((e && e.message) || 'Simulasi gaji gagal.');
+    } finally {
+      setDemoBusy(false);
+    }
+  };
+
+  const onDemoReset = async () => {
+    if (!window.confirm('Reset data demo? Semua transaksi, Kantong, Goal, notifikasi, dan percakapan akan dihapus lalu dibuat ulang.')) return;
+    setDemoBusy(true);
+    try {
+      await demoReset();
+      try {
+        localStorage.removeItem(LS_SESSION);
+      } catch {
+        /* penyimpanan diblokir */
+      }
+      setSessions([]);
+      await startNewSession();
+      await Promise.all([loadFinance(), loadNotifications()]);
+      toast('Data demo dikembalikan ke kondisi awal.');
+    } catch (e) {
+      toast((e && e.message) || 'Reset data demo gagal.');
+    } finally {
+      setDemoBusy(false);
+    }
+  };
+
+  const onOpenNotification = async (n) => {
+    setDemoBusy(true);
+    toast('Menyiapkan Rencana Alokasi…');
+    try {
+      const session = await openNotification(n.id);
+      setSessions((list) => (list.some((x) => x.id === session.id) ? list : [session, ...list]));
+      await openSession(session.id);
+      setNotifications((list) => list.map((x) => (x.id === n.id ? { ...x, dibaca_at: x.dibaca_at || new Date().toISOString() } : x)));
+      go('chat');
+    } catch (e) {
+      toast((e && e.message) || 'Notifikasi gagal dibuka.');
+    } finally {
+      setDemoBusy(false);
+    }
   };
 
   /* ---------- kirim pesan ---------- */
@@ -907,9 +1010,10 @@ export default function Page() {
               onChange={(e) => openSession(e.target.value).catch((err) => toast((err && err.message) || 'Percakapan gagal dibuka.'))}
             >
               {sessions.map((x) => (
-                <option key={x.id} value={x.id}>{fmtWaktu(x.created_at)}</option>
+                <option key={x.id} value={x.id}>{(x.dimulai_oleh === 'agent' ? 'Gajian · ' : '') + fmtWaktu(x.created_at)}</option>
               ))}
             </select>
+            <NotifBell items={notifications} disabled={busy || inCall || voiceBusy || demoBusy} onOpen={onOpenNotification} />
             <button type="button" className="btn ghost" onClick={newChat}>Chat baru</button>
             <button
               type="button"
@@ -921,7 +1025,7 @@ export default function Page() {
               <PhoneIcon />
               <span className="hide-sm">Telepon</span>
             </button>
-            <button type="button" className="btn ghost" onClick={callAgent}>
+            <button type="button" className="btn ghost" aria-label="Hubungi agen" onClick={callAgent}>
               <HeadsetIcon />
               <span className="hide-sm">Hubungi agen</span>
             </button>
@@ -932,22 +1036,30 @@ export default function Page() {
               {`Halo, ${account ? account.nama : 'Nasabah'}! Saya Agent Nusa. Pilih topik di bawah atau ketik pertanyaan Anda.`}
               <span className="small">Demi keamanan, jangan pernah membagikan PIN, password, atau kode OTP kepada siapa pun, termasuk kami.</span>
             </div>
-            {chat.map((m) => (
-              <div key={m.id} className={'msg ' + (m.role === 'user' ? 'user' : 'bot') + (m.err ? ' err' : '')}>
-                {m.pending ? (
-                  <span className="typing" role="img" aria-label="Agent Nusa sedang mengetik"><i /><i /><i /></span>
-                ) : typeof m.shown === 'number' ? (
-                  <>
-                    {/* Pembaca layar langsung mendapat teks lengkap; tampilan berjalan seiring suara. */}
-                    <span className="sr">{m.content}</span>
-                    <span aria-hidden="true">{visibleText(m)}</span>
-                    <span className="speak-caret" aria-hidden="true" />
-                  </>
-                ) : (
-                  m.content
-                )}
-              </div>
-            ))}
+            {chat.map((m) => {
+              if (m.role === 'card') {
+                return <RencanaCard key={m.id} planId={m.card.plan_id} disabled={busy || inCall || voiceBusy} onChanged={afterPlanChange} />;
+              }
+              if (m.role === 'note') {
+                return <div key={m.id} className="msg note" role="note">{m.content}</div>;
+              }
+              return (
+                <div key={m.id} className={'msg ' + (m.role === 'user' ? 'user' : 'bot') + (m.err ? ' err' : '')}>
+                  {m.pending ? (
+                    <span className="typing" role="img" aria-label="Agent Nusa sedang mengetik"><i /><i /><i /></span>
+                  ) : typeof m.shown === 'number' ? (
+                    <>
+                      {/* Pembaca layar langsung mendapat teks lengkap; tampilan berjalan seiring suara. */}
+                      <span className="sr">{m.content}</span>
+                      <span aria-hidden="true">{visibleText(m)}</span>
+                      <span className="speak-caret" aria-hidden="true" />
+                    </>
+                  ) : (
+                    m.content
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           {inCall ? (
@@ -1028,8 +1140,19 @@ export default function Page() {
           <div className="balance">
             <div className="balance-sm">{account ? `Tabungan Agent Nusa · •••• ${account.nomor_akhir}` : 'Memuat rekening…'}</div>
             <div className="balance-big">{account ? rp(account.saldo_total) : '—'}</div>
-            <div className="balance-sm">Saldo Total · data demo</div>
+            <div className="balance-sm">{account ? `Saldo Total · Saldo Bebas ${rp(account.saldo_bebas)}` : 'Saldo Total'}</div>
           </div>
+          {kantong.length > 0 && (
+            <ul className="kantong-list" aria-label="Kantong">
+              {kantong.map((k) => (
+                <li key={k.pocket_id}>
+                  <span>{k.nama}</span>
+                  <b>{rp(k.saldo)}</b>
+                </li>
+              ))}
+            </ul>
+          )}
+          <DemoPanel disabled={busy || inCall || voiceBusy || demoBusy} onGaji={onDemoGaji} onReset={onDemoReset} />
           <div className="tx-head">
             <h2>Riwayat Transaksi</h2>
             <span className="tx-note">Ketuk untuk tanya Agent Nusa</span>
