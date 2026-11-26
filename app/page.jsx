@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import PhoneDemo from '../components/PhoneDemo';
 import FeatureTabs from '../components/FeatureTabs';
+import SafetyFeatures from '../components/SafetyFeatures';
+import FraudAlert from '../components/FraudAlert';
 import './landing.css';
 
 export const metadata = {
@@ -10,28 +12,38 @@ export const metadata = {
 
 const TOPICS = ['Status transfer', 'Tagihan dan pembayaran', 'Blokir kartu', 'QRIS', 'Biaya dan limit', 'Komplain', 'Info produk'];
 
-const CARDS = [
+const PLANS = [
   {
-    pose: 'ok',
-    title: 'Jawaban dari sumber resmi',
-    text: 'Agent Nusa menjawab dari informasi resmi bank dan data transaksi Anda. Kalau tidak tahu, Agent Nusa bilang tidak tahu, bukan mengarang.'
+    name: 'Gratis',
+    price: 'Rp0',
+    cadence: 'untuk demo',
+    summary: 'Coba pengalaman Agent Nusa sebelum berlangganan.',
+    features: ['Chat demo Agent Nusa', 'Contoh bantuan transfer dan kartu', 'Tanpa pembayaran'],
+    cta: 'Coba demo'
   },
   {
-    pose: 'announce',
-    title: 'Tidak pernah minta PIN atau OTP',
-    text: 'Agent Nusa mengingatkan Anda bila data sensitif terketik di chat, dan verifikasi dilakukan di halaman resmi bank.'
+    name: 'Personal',
+    price: 'Rp49.000',
+    cadence: '/ bulan',
+    summary: 'Untuk kebutuhan layanan nasabah sehari-hari.',
+    features: ['Asisten untuk pertanyaan umum', 'Panduan transaksi dan kartu', 'Dukungan melalui chat'],
+    cta: 'Lihat demo',
+    featured: true
   },
   {
-    pose: 'coffee',
-    title: 'Agen manusia selalu bisa dihubungi',
-    text: 'Satu ketukan untuk bicara dengan agen. Ringkasan percakapan ikut terkirim, jadi Anda tidak perlu mengulang cerita.'
+    name: 'Bisnis',
+    price: 'Rp149.000',
+    cadence: '/ bulan',
+    summary: 'Untuk tim yang ingin mengeksplorasi layanan berbantuan AI.',
+    features: ['Paket untuk tim layanan', 'Alur bantuan yang dapat disesuaikan', 'Diskusi kebutuhan integrasi'],
+    cta: 'Lihat demo'
   }
 ];
 
 const STEPS = [
-  { pose: 'ask', title: 'Pilih topik atau ketik pertanyaan', text: 'Mulai dari tombol topik populer seperti status transfer, tagihan, atau blokir kartu.' },
-  { pose: 'laptop', title: 'Agent Nusa mengecek untuk Anda', text: 'Untuk data pribadi, Agent Nusa meminta login dan verifikasi di kanal resmi bank. Tidak pernah lewat kolom chat.' },
-  { pose: 'cheer', title: 'Selesai, atau lanjut ke agen', text: 'Masalah beres di chat, atau diteruskan ke agen dengan ringkasan lengkap bila perlu.' }
+  { pose: 'ask', title: 'Tanyakan langsung', text: 'Pilih topik atau tulis masalah Anda, seperti transfer gagal atau kartu hilang.' },
+  { pose: 'laptop', title: 'Dapatkan jawaban', text: 'Agent Nusa memeriksa data demo dan memberi langkah atau status yang relevan.' },
+  { pose: 'cheer', title: 'Selesaikan masalah', text: 'Urusan dapat beres di chat, atau diteruskan ke agen dengan ringkasan.' }
 ];
 
 const FAQ = [
@@ -64,6 +76,7 @@ export default function Landing() {
           <a href="#atas" className="lp-logo"><BankMark />Agent Nusa</a>
           <nav className="lp-links" aria-label="Menu halaman">
             <a href="#fitur">Fitur</a>
+            <a href="#harga">Harga</a>
             <a href="#cara">Cara kerja</a>
             <a href="#faq">FAQ</a>
           </nav>
@@ -120,51 +133,44 @@ export default function Landing() {
       {/* FITUR TAB */}
       <section className="lp-sec" id="fitur">
         <div className="lp-wrap">
-          <h2 className="lp-h2">Solusi chat yang membuat urusan bank terasa ringan</h2>
-          <p className="lp-lead">Pilih skenario, lihat bagaimana Agent Nusa menjawab.</p>
+          <h2 className="lp-h2">Dari pertanyaan sampai jawaban</h2>
+          <p className="lp-lead">Pilih satu contoh untuk melihat alur percakapannya.</p>
           <FeatureTabs />
         </div>
       </section>
 
       {/* KARTU */}
-      <section className="lp-sec alt">
+      <SafetyFeatures />
+
+      {/* HARGA */}
+      <section className="lp-sec lp-pricing" id="harga">
         <div className="lp-wrap">
-          <h2 className="lp-h2">Aman, jujur, dan tetap ada manusia di baliknya</h2>
-          <p className="lp-lead">Tiga prinsip yang dipegang Agent Nusa di setiap percakapan.</p>
-          <div className="lp-cards">
-            {CARDS.map((c) => (
-              <article key={c.title} className="lp-card3">
-                <img className={'lp-card3-img ' + c.pose} src={`/assets/${c.pose}.png`} alt="" />
-                <h3>{c.title}</h3>
-                <p>{c.text}</p>
+          <p className="lp-eyebrow">Paket berlangganan</p>
+          <h2 className="lp-h2">Pilih paket yang sesuai</h2>
+          <p className="lp-lead">Harga per bulan dalam rupiah. Paket masih berupa konsep; pembelian belum tersedia di demo ini.</p>
+          <div className="lp-plan-grid">
+            {PLANS.map((plan) => (
+              <article key={plan.name} className={'lp-plan' + (plan.featured ? ' featured' : '')}>
+                {plan.featured && <span className="lp-plan-tag">Pilihan populer</span>}
+                <h3>{plan.name}</h3>
+                <p className="lp-plan-summary">{plan.summary}</p>
+                <p className="lp-plan-price">
+                  <strong>{plan.price}</strong>
+                  <span>{plan.cadence}</span>
+                </p>
+                <ul>
+                  {plan.features.map((feature) => <li key={feature}>{feature}</li>)}
+                </ul>
+                <Link href="/chat" className={'lp-btn ' + (plan.featured ? 'dark' : 'light')}>{plan.cta}</Link>
               </article>
             ))}
           </div>
+          <p className="lp-pricing-note">Harga dan fitur di atas adalah usulan awal dan dapat berubah sebelum layanan diluncurkan.</p>
         </div>
       </section>
 
       {/* ROW 1 */}
-      <section className="lp-sec">
-        <div className="lp-wrap lp-row">
-          <div className="lp-row-text">
-            <h2 className="lp-h2 left">Peringatan penipuan sebelum terlambat</h2>
-            <p>Modus meminta OTP, link palsu, dan telepon mengaku petugas bank terus berganti. Agent Nusa mengingatkan Anda di saat yang tepat.</p>
-            <ul className="lp-checks">
-              <li>Mengingatkan agar PIN, password, dan OTP tidak dibagikan</li>
-              <li>Menyamarkan nomor kartu dan rekening di layar</li>
-              <li>Meneruskan transaksi mencurigakan ke tim anti-fraud</li>
-            </ul>
-            <Link href="/chat" className="lp-link">Coba tanya Agent Nusa <Arrow /></Link>
-          </div>
-          <div className="lp-row-art mint">
-            <img className="lp-row-mascot shake" src="/assets/announce.png" alt="Maskot Agent Nusa membawa megafon" />
-            <div className="lp-alert-card" aria-hidden="true">
-              <b>Info penting</b>
-              <span>Bank tidak pernah meminta kode OTP lewat chat atau telepon.</span>
-            </div>
-          </div>
-        </div>
-      </section>
+      <FraudAlert />
 
       {/* ROW 2 */}
       <section className="lp-sec">
@@ -195,8 +201,8 @@ export default function Landing() {
       {/* CARA KERJA */}
       <section className="lp-sec alt" id="cara">
         <div className="lp-wrap">
-          <h2 className="lp-h2">Cara kerjanya sederhana</h2>
-          <p className="lp-lead">Tiga langkah dari pertanyaan sampai selesai.</p>
+          <h2 className="lp-h2">Mulai chat dalam tiga langkah</h2>
+          <p className="lp-lead">Singkat, langsung, dan bisa diteruskan ke agen kapan diperlukan.</p>
           <ol className="lp-steps">
             {STEPS.map((s, i) => (
               <li key={s.title} className="lp-step">
@@ -214,8 +220,8 @@ export default function Landing() {
       <section className="lp-sec" id="faq">
         <div className="lp-wrap lp-faq">
           <div>
-            <h2 className="lp-h2 left">Pertanyaan yang sering diajukan</h2>
-            <p className="lp-lead left">Belum ketemu jawabannya? Tanyakan langsung ke Agent Nusa.</p>
+            <h2 className="lp-h2 left">Pertanyaan yang sering ditanyakan</h2>
+            <p className="lp-lead left">Bacaan singkat sebelum memulai percakapan.</p>
             <Link href="/chat" className="lp-btn dark">Tanya Agent Nusa <Arrow /></Link>
           </div>
           <div className="lp-faq-list">
@@ -236,7 +242,7 @@ export default function Landing() {
             <h2>Siap ngobrol dengan Agent Nusa?</h2>
             <p>Buka chat, pilih topik, dan lihat bagaimana urusan bank bisa selesai dalam beberapa menit.</p>
             <Link href="/chat" className="lp-btn white big">Mulai chat <Arrow /></Link>
-            <small>Pertama kali? Masukkan API key Netra di halaman Pengaturan AI.</small>
+            <small>Demo layanan memerlukan konfigurasi API oleh administrator.</small>
           </div>
           <img className="lp-final-mascot" src="/assets/hero.png" alt="Maskot Agent Nusa melambaikan tangan" />
         </div>
@@ -250,6 +256,7 @@ export default function Landing() {
           </div>
           <nav aria-label="Tautan footer">
             <a href="#fitur">Fitur</a>
+            <a href="#harga">Harga</a>
             <a href="#cara">Cara kerja</a>
             <a href="#faq">FAQ</a>
             <Link href="/chat">Chat Bantuan</Link>

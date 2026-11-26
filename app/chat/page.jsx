@@ -10,6 +10,9 @@ const LS_CHAT = 'nusa.chat.v1';
 const POSES = { ask: 'ask', think: 'think', work: 'laptop', ok: 'ok', err: 'bow', alert: 'announce' };
 
 const newId = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGES = 3;
+const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const readLS = (k, fb) => {
   try {
     const v = localStorage.getItem(k);
@@ -26,6 +29,13 @@ const writeLS = (k, v) => {
   }
 };
 const sendable = (m) => !m.err && !m.skip && !m.pending && m.content;
+const readImageDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Gambar tidak dapat dibaca.'));
+    reader.onerror = () => reject(new Error('Gambar tidak dapat dibaca.'));
+    reader.readAsDataURL(file);
+  });
 
 function Svg({ size = 20, children, ...rest }) {
   return (
@@ -45,6 +55,9 @@ const GearIcon = () => (
 const HeadsetIcon = () => <Svg size={18}><path d="M5 12a7 7 0 0 1 14 0v4a2 2 0 0 1-2 2h-1v-6h3M5 12v4a2 2 0 0 0 2 2h1v-6H5" /></Svg>;
 const HomeIcon = () => <Svg><path d="M4 11 12 4l8 7v8a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z" /></Svg>;
 const SendIcon = () => <Svg strokeWidth="2"><path d="M4 12 20 4l-4 16-4-6.5z" /></Svg>;
+const AttachIcon = () => <Svg><path d="m8 12.5 6.8-6.8a3.5 3.5 0 0 1 5 5l-8.5 8.5a5 5 0 0 1-7.1-7.1l8.4-8.4" /></Svg>;
+const MicIcon = () => <Svg><rect x="9" y="3" width="6" height="12" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3m-4 0h8" /></Svg>;
+const StopIcon = () => <Svg><rect x="6" y="6" width="12" height="12" rx="2" /></Svg>;
 const BankIcon = () => (
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M3 9.5 12 4l9 5.5" /><path d="M5 10v8M9.5 10v8M14.5 10v8M19 10v8" /><path d="M3 20h18" />
@@ -58,11 +71,16 @@ export default function Page() {
   const [draft, setDraft] = useState(DEFAULTS);
   const [chat, setChat] = useState([]);
   const [input, setInput] = useState('');
+  const [attachments, setAttachments] = useState([]);
+  const [attachmentError, setAttachmentError] = useState('');
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [voiceError, setVoiceError] = useState('');
   const [busy, setBusy] = useState(false);
   const [pose, setPose] = useState('alert');
   const [statusErr, setStatusErr] = useState(false);
   const [txFilter, setTxFilter] = useState('all');
-  const [showKey, setShowKey] = useState(false);
+  const [apiStatus, setApiStatus] = useState('checking');
   const [test, setTest] = useState({ text: '', ok: null, running: false });
   const [toastMsg, setToastMsg] = useState('');
 
@@ -73,14 +91,26 @@ export default function Page() {
   const toastTimer = useRef(null);
   const errTimer = useRef(null);
   const inputRef = useRef(null);
+  const fileInputRef = useRef(null);
   const messagesRef = useRef(null);
+  const attachmentsRef = useRef([]);
+  const recorderRef = useRef(null);
+  const recordingStreamRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const recordTimerRef = useRef(null);
+  const sendLockRef = useRef(false);
 
   chatRef.current = chat;
   settingsRef.current = settings;
+  attachmentsRef.current = attachments;
 
   /* ---------- muat & simpan ---------- */
   useEffect(() => {
-    const s = { ...DEFAULTS, ...readLS(LS_SETTINGS, {}) };
+    const stored = readLS(LS_SETTINGS, {});
+    const safeSettings = stored && typeof stored === 'object' && !Array.isArray(stored) ? { ...stored } : {};
+    delete safeSettings.apiKey;
+    localStorage.removeItem(LS_SETTINGS);
+    const s = { ...DEFAULTS, ...safeSettings };
     const saved = readLS(LS_CHAT, []);
     setSettings(s);
     setDraft(s);
@@ -91,12 +121,41 @@ export default function Page() {
             .map((m) => ({ id: newId(), role: m.role, content: m.content }))
         : []
     );
-    setView(s.apiKey ? 'chat' : 'settings');
+    setView('chat');
     setReady(true);
     return () => {
       clearTimeout(poseTimer.current);
       clearTimeout(toastTimer.current);
       clearTimeout(errTimer.current);
+      clearTimeout(recordTimerRef.current);
+      if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+        recorderRef.current.onstop = null;
+        recorderRef.current.stop();
+      }
+      if (recordingStreamRef.current) recordingStreamRef.current.getTracks().forEach((track) => track.stop());
+      attachmentsRef.current.forEach((item) => URL.revokeObjectURL(item.preview));
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/chat', { cache: 'no-store' })
+      .then((res) => {
+        if (!res.ok) throw new Error('Status konfigurasi tidak dapat diperiksa.');
+        return res.json();
+      })
+      .then((data) => {
+        if (active && typeof data.configured === 'boolean') {
+          setApiStatus(data.configured ? 'configured' : 'missing');
+        } else if (active) {
+          setApiStatus('error');
+        }
+      })
+      .catch(() => {
+        if (active) setApiStatus('error');
+      });
+    return () => {
+      active = false;
     };
   }, []);
 
@@ -110,13 +169,13 @@ export default function Page() {
 
   useEffect(() => {
     clearTimeout(poseTimer.current);
-    setPose(settings.apiKey ? 'ask' : 'alert');
-  }, [settings.apiKey]);
+    setPose(apiStatus === 'configured' ? 'ask' : 'alert');
+  }, [apiStatus]);
 
   useEffect(() => {
     const el = messagesRef.current;
     if (view === 'chat' && el) el.scrollTop = el.scrollHeight;
-  }, [chat, view, settings.apiKey]);
+  }, [chat, view]);
 
   useEffect(() => {
     const el = inputRef.current;
@@ -131,7 +190,7 @@ export default function Page() {
     clearTimeout(poseTimer.current);
     setPose(p);
     if (back) {
-      poseTimer.current = setTimeout(() => setPose(settingsRef.current.apiKey ? 'ask' : 'alert'), back);
+      poseTimer.current = setTimeout(() => setPose(apiStatus === 'configured' ? 'ask' : 'alert'), back);
     }
   };
   const toast = (msg) => {
@@ -145,28 +204,57 @@ export default function Page() {
   };
 
   /* ---------- kirim pesan ---------- */
-  const send = async (raw) => {
-    const text = (raw || '').trim();
-    if (!text || busy) return;
+  const send = async (raw, selectedAttachments = attachments) => {
+    const typedText = (raw || '').trim();
+    if ((!typedText && selectedAttachments.length === 0) || busy || sendLockRef.current) return;
     const s = settingsRef.current;
-    if (!s.apiKey) {
-      toast('Isi API key dulu di Pengaturan AI.');
+    if (apiStatus !== 'configured') {
+      toast(apiStatus === 'missing' ? 'API belum dikonfigurasi di server.' : 'Status konfigurasi API belum tersedia.');
       go('settings');
       return;
     }
     go('chat');
-
-    const uid = newId();
-    const aid = newId();
-    const history = [...chatRef.current.filter(sendable), { role: 'user', content: text }]
-      .slice(-20)
-      .map(({ role, content }) => ({ role, content }));
-    const messages = [{ role: 'system', content: s.systemPrompt + '\n\n' + demoContext() }, ...history];
-
-    setChat((c) => [...c, { id: uid, role: 'user', content: text }, { id: aid, role: 'assistant', content: '', pending: true }]);
-    setInput('');
+    sendLockRef.current = true;
     setBusy(true);
     showPose('work');
+
+    const text = typedText || 'Tolong jelaskan gambar yang saya lampirkan.';
+    let imageBlocks = [];
+    try {
+      imageBlocks = await Promise.all(
+        selectedAttachments.map(async ({ file }) => ({
+          type: 'image_url',
+          image_url: { url: await readImageDataUrl(file) }
+        }))
+      );
+    } catch (e) {
+      toast((e && e.message) || 'Gambar tidak dapat dibaca.');
+      sendLockRef.current = false;
+      setBusy(false);
+      showPose('ask');
+      return;
+    }
+
+    const displayText = [text, ...selectedAttachments.map(({ file }) => `[Gambar: ${file.name}]`)].join('\n');
+    const uid = newId();
+    const aid = newId();
+    const history = chatRef.current.filter(sendable)
+      .slice(-19)
+      .map(({ role, content }) => ({ role, content }));
+    const currentContent = imageBlocks.length
+      ? [{ type: 'text', text }, ...imageBlocks]
+      : text;
+    const messages = [
+      { role: 'system', content: s.systemPrompt + '\n\n' + demoContext() },
+      ...history,
+      { role: 'user', content: currentContent }
+    ];
+
+    setChat((c) => [...c, { id: uid, role: 'user', content: displayText }, { id: aid, role: 'assistant', content: '', pending: true }]);
+    setInput('');
+    selectedAttachments.forEach(({ preview }) => URL.revokeObjectURL(preview));
+    setAttachments([]);
+    setAttachmentError('');
 
     const ac = new AbortController();
     abortRef.current = ac;
@@ -203,14 +291,128 @@ export default function Page() {
       }
     } finally {
       abortRef.current = null;
+      sendLockRef.current = false;
       setBusy(false);
     }
+  };
+
+  const handleFiles = (event) => {
+    const selected = Array.from(event.target.files || []);
+    event.target.value = '';
+    setAttachmentError('');
+
+    const accepted = [];
+    for (const file of selected) {
+      if (!IMAGE_TYPES.has(file.type)) {
+        setAttachmentError('Gunakan gambar PNG, JPG, atau WebP.');
+      } else if (file.size > MAX_IMAGE_BYTES) {
+        setAttachmentError('Ukuran maksimal tiap gambar adalah 5 MB.');
+      } else if (attachments.length + accepted.length >= MAX_IMAGES) {
+        setAttachmentError('Maksimal 3 gambar dalam satu pesan.');
+      } else {
+        accepted.push({ id: newId(), file, preview: URL.createObjectURL(file) });
+      }
+    }
+
+    if (accepted.length) setAttachments((current) => [...current, ...accepted]);
+  };
+
+  const removeAttachment = (id) => {
+    const item = attachments.find((attachment) => attachment.id === id);
+    if (item) URL.revokeObjectURL(item.preview);
+    setAttachments((current) => current.filter((attachment) => attachment.id !== id));
+  };
+
+  const releaseRecording = () => {
+    clearTimeout(recordTimerRef.current);
+    if (recordingStreamRef.current) {
+      recordingStreamRef.current.getTracks().forEach((track) => track.stop());
+      recordingStreamRef.current = null;
+    }
+    recorderRef.current = null;
+  };
+
+  const transcribeAudio = async (blob) => {
+    setTranscribing(true);
+    setVoiceError('');
+    try {
+      const response = await fetch('/api/transcribe', {
+        method: 'POST',
+        headers: { 'Content-Type': blob.type || 'audio/webm' },
+        body: blob
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error?.message || 'Transkripsi gagal.');
+      if (typeof result.transcript !== 'string' || !result.transcript.trim()) {
+        throw new Error('Tidak ada ucapan yang terdeteksi. Coba rekam lebih dekat ke mikrofon.');
+      }
+      setInput((current) => `${current.trimEnd()}${current.trim() ? ' ' : ''}${result.transcript.trim()}`);
+      inputRef.current?.focus({ preventScroll: true });
+    } catch (e) {
+      setVoiceError((e && e.message) || 'Transkripsi gagal. Coba lagi.');
+    } finally {
+      setTranscribing(false);
+    }
+  };
+
+  const startRecording = async () => {
+    setVoiceError('');
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setVoiceError('Perekaman suara tidak didukung browser ini. Gunakan browser modern melalui HTTPS.');
+      return;
+    }
+
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingStreamRef.current = stream;
+      const mimeType = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4']
+        .find((type) => MediaRecorder.isTypeSupported(type));
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      recorderRef.current = recorder;
+      audioChunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size) audioChunksRef.current.push(event.data);
+      };
+      recorder.onerror = () => setVoiceError('Perekaman gagal. Periksa izin mikrofon lalu coba lagi.');
+      recorder.onstop = () => {
+        const audio = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        audioChunksRef.current = [];
+        releaseRecording();
+        setRecording(false);
+        if (audio.size) void transcribeAudio(audio);
+        else setVoiceError('Audio kosong. Coba rekam lagi.');
+      };
+      recorder.start();
+      setRecording(true);
+      recordTimerRef.current = setTimeout(() => {
+        if (recorder.state !== 'inactive') recorder.stop();
+      }, 60000);
+    } catch {
+      if (stream) stream.getTracks().forEach((track) => track.stop());
+      recordingStreamRef.current = null;
+      recorderRef.current = null;
+      setRecording(false);
+      setVoiceError('Tidak dapat mengakses mikrofon. Izinkan akses mikrofon lalu coba lagi.');
+    }
+  };
+
+  const stopRecording = () => {
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== 'inactive') recorder.stop();
+  };
+
+  const clearAttachments = () => {
+    attachments.forEach(({ preview }) => URL.revokeObjectURL(preview));
+    setAttachments([]);
+    setAttachmentError('');
   };
 
   const newChat = () => {
     if (abortRef.current) abortRef.current.abort();
     setChat([]);
-    showPose(settings.apiKey ? 'ask' : 'alert');
+    clearAttachments();
+    showPose(apiStatus === 'configured' ? 'ask' : 'alert');
     toast('Percakapan baru dimulai.');
   };
 
@@ -262,28 +464,26 @@ export default function Page() {
     }
   };
 
-  const clearKey = () => {
-    setSettings((s) => ({ ...s, apiKey: '' }));
-    setDraft((d) => ({ ...d, apiKey: '' }));
-    setTest({ text: 'API key dihapus dari browser ini.', ok: null, running: false });
-  };
-
   const resetDefaults = () => {
-    const s = { ...DEFAULTS, apiKey: settings.apiKey };
+    const s = { ...DEFAULTS };
     setSettings(s);
     setDraft(s);
-    setTest({ text: 'Pengaturan dikembalikan ke default (API key dipertahankan).', ok: null, running: false });
+    setTest({ text: 'Pengaturan dikembalikan ke default.', ok: null, running: false });
   };
 
   /* ---------- turunan ---------- */
-  const connected = ready && !!settings.apiKey;
+  const connected = ready && apiStatus === 'configured';
   const poseFile = POSES[pose] || 'ask';
   const txs = TXS.filter((t) => txFilter === 'all' || t.dir === txFilter);
   const statusText = !ready
     ? 'Memuat…'
-    : connected
+    : apiStatus === 'configured'
     ? 'Online · Asisten virtual Agent Nusa'
-    : 'Belum terhubung · atur API key di Pengaturan AI';
+    : apiStatus === 'missing'
+    ? 'API belum dikonfigurasi di server'
+    : apiStatus === 'error'
+    ? 'Status API tidak dapat diperiksa'
+    : 'Memeriksa konfigurasi API…';
 
   const askAbout = (t) => {
     setInput(`Tolong jelaskan transaksi "${t.name}" ${rp(t.amt)} tanggal ${t.date}.`);
@@ -357,11 +557,15 @@ export default function Page() {
               Halo, Dimas! Saya Agent Nusa. Pilih topik di bawah atau ketik pertanyaan Anda.
               <span className="small">Demi keamanan, jangan pernah membagikan PIN, password, atau kode OTP kepada siapa pun, termasuk kami.</span>
             </div>
-            {ready && !settings.apiKey && (
+            {ready && apiStatus !== 'configured' && (
               <div className="msg bot">
-                Agent Nusa belum bisa menjawab karena API key belum diisi.
+                {apiStatus === 'missing'
+                  ? 'Agent Nusa belum aktif. Admin perlu mengatur NETRA_API_KEY di environment server dan menjalankan ulang aplikasi.'
+                  : apiStatus === 'error'
+                  ? 'Status konfigurasi Agent Nusa belum dapat diperiksa. Coba muat ulang halaman atau periksa koneksi server.'
+                  : 'Agent Nusa sedang memeriksa konfigurasi server.'}
                 <div className="row">
-                  <button type="button" className="btn primary" onClick={() => go('settings')}>Atur API key</button>
+                  <button type="button" className="btn primary" onClick={() => go('settings')}>Lihat status konfigurasi</button>
                 </div>
               </div>
             )}
@@ -377,6 +581,54 @@ export default function Page() {
           </div>
 
           <div className="composer-wrap">
+            <input
+              ref={fileInputRef}
+              className="sr"
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              multiple
+              onChange={handleFiles}
+              tabIndex={-1}
+              aria-hidden="true"
+            />
+            <div className="composer-tools">
+              <button
+                type="button"
+                className="tool-button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={busy || recording || transcribing || attachments.length >= MAX_IMAGES}
+              >
+                <AttachIcon />
+                <span>Gambar ({attachments.length}/{MAX_IMAGES})</span>
+              </button>
+              {recording ? (
+                <button type="button" className="tool-button recording" onClick={stopRecording}>
+                  <StopIcon />
+                  <span>Hentikan rekaman</span>
+                </button>
+              ) : (
+                <button type="button" className="tool-button" onClick={startRecording} disabled={busy || transcribing}>
+                  <MicIcon />
+                  <span>{transcribing ? 'Mentranskripsi…' : 'Voice to text'}</span>
+                </button>
+              )}
+              {recording && <span className="tool-status" role="status">Merekam · maksimal 60 detik</span>}
+            </div>
+            {attachments.length > 0 && (
+              <div className="attachment-list" aria-label="Gambar terlampir">
+                {attachments.map(({ id, file, preview }) => (
+                  <div className="attachment-item" key={id}>
+                    <img src={preview} alt="" />
+                    <span title={file.name}>{file.name}</span>
+                    <button type="button" aria-label={`Hapus ${file.name}`} onClick={() => removeAttachment(id)}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {(attachmentError || voiceError) && (
+              <p className="tool-error" role="status">{attachmentError || voiceError}</p>
+            )}
+            <p className="tool-disclosure">Gambar dikirim ke Netra untuk menjawab. Audio dikirim ke Deepgram hanya untuk transkripsi.</p>
             <div className="chips">
               {CHIPS.map(([label, text]) => (
                 <button key={label} type="button" className="chip" disabled={busy} onClick={() => send(text)}>
@@ -389,7 +641,7 @@ export default function Page() {
               autoComplete="off"
               onSubmit={(e) => {
                 e.preventDefault();
-                send(input);
+                send(input, attachments);
               }}
             >
               <label htmlFor="input" className="sr">Tulis pesan</label>
@@ -404,7 +656,7 @@ export default function Page() {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                     e.preventDefault();
-                    send(input);
+                    send(input, attachments);
                   }
                 }}
               />
@@ -413,7 +665,12 @@ export default function Page() {
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
                 </button>
               )}
-              <button type="submit" className="send" aria-label="Kirim pesan" disabled={busy}>
+              <button
+                type="submit"
+                className="send"
+                aria-label="Kirim pesan"
+                disabled={busy || recording || transcribing || (!input.trim() && attachments.length === 0)}
+              >
                 <SendIcon />
               </button>
             </form>
@@ -468,7 +725,7 @@ export default function Page() {
               <div className="avatar"><img src="/assets/laptop.png" alt="" /></div>
               <div>
                 <h1>Pengaturan AI</h1>
-                <p>Masukkan API key Netra Runtime agar Agent Nusa bisa menjawab. Pengaturan disimpan di browser ini saja.</p>
+                <p>API key dikelola di environment server, tidak dikirim atau disimpan di browser. Preferensi model dan percakapan disimpan lokal.</p>
               </div>
             </header>
 
@@ -477,23 +734,13 @@ export default function Page() {
                 <legend>Koneksi</legend>
 
                 <div className="field">
-                  <label htmlFor="apiKey"><span>API key</span></label>
-                  <div className="with-btn">
-                    <input
-                      id="apiKey"
-                      type={showKey ? 'text' : 'password'}
-                      placeholder="Tempel API key Netra di sini"
-                      spellCheck={false}
-                      autoCapitalize="off"
-                      autoComplete="off"
-                      value={draft.apiKey}
-                      onChange={upd('apiKey')}
-                    />
-                    <button type="button" className="btn ghost" aria-pressed={showKey} onClick={() => setShowKey((v) => !v)}>
-                      {showKey ? 'Sembunyikan' : 'Tampilkan'}
-                    </button>
-                  </div>
-                  <small>Key tersimpan di browser Anda dan dikirim lewat server aplikasi ini ke API Netra. Jangan bagikan layar ini saat key terlihat.</small>
+                  <span>Status koneksi</span>
+                  <strong>{apiStatus === 'configured' ? 'Terhubung' : apiStatus === 'missing' ? 'Belum dikonfigurasi' : apiStatus === 'error' ? 'Tidak dapat diperiksa' : 'Memeriksa…'}</strong>
+                  <small>
+                    {apiStatus === 'missing'
+                      ? 'Tambahkan NETRA_API_KEY ke file .env.local untuk pengembangan, atau ke pengaturan environment deployment. Restart server setelah mengubahnya.'
+                      : 'Kredensial disimpan hanya di server sebagai NETRA_API_KEY. Browser hanya menerima status konfigurasi, bukan nilai key.'}
+                  </small>
                 </div>
 
                 <div className="field">
@@ -542,7 +789,6 @@ export default function Page() {
               <div className="actions">
                 <button type="submit" className="btn primary">Simpan pengaturan</button>
                 <button type="button" className="btn ghost" disabled={test.running} onClick={runTest}>Uji koneksi</button>
-                <button type="button" className="btn ghost danger" onClick={clearKey}>Hapus API key</button>
                 <button type="button" className="btn ghost" onClick={resetDefaults}>Kembalikan default</button>
               </div>
               <div className={'test-result' + (test.ok === true ? ' ok' : test.ok === false ? ' bad' : '')} role="status" aria-live="polite">
