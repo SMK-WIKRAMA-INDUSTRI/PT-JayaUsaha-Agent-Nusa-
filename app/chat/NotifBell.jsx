@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { fmtWaktu } from '../../lib/format';
 
 const BellIcon = () => (
@@ -13,9 +13,28 @@ const BellIcon = () => (
 // Lonceng Notifikasi Gajian. items: [{ id, isi, dibaca_at, created_at }].
 export default function NotifBell({ items, disabled, onOpen }) {
   const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
   const unread = items.filter((n) => !n.dibaca_at).length;
+
+  // Popover ditutup dengan Escape atau klik di luar lonceng.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    const onDown = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [open]);
+
   return (
-    <div className="notif">
+    <div className="notif" ref={rootRef}>
       <button
         type="button"
         className="btn ghost notif-btn"

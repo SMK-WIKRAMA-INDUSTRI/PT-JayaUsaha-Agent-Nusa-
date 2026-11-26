@@ -325,7 +325,9 @@ export default function Page() {
 
   const refreshSession = () => {
     const sid = sessionRef.current;
-    if (sid) openSession(sid).catch(() => {});
+    // Saat jawaban masih di-stream, memuat ulang riwayat akan menghapus gelembung yang sedang diisi.
+    if (!sid || abortRef.current) return;
+    openSession(sid).catch(() => {});
   };
 
   const afterPlanChange = () => {
@@ -336,9 +338,9 @@ export default function Page() {
   const onDemoGaji = async () => {
     setDemoBusy(true);
     try {
-      await demoGaji();
+      const res = await demoGaji();
       await Promise.all([loadFinance(), loadNotifications()]);
-      toast('Gaji masuk. Buka lonceng notifikasi untuk mengatur pembagiannya.');
+      toast(res.plan_id ? 'Gaji masuk. Buka lonceng notifikasi untuk mengatur pembagiannya.' : 'Gaji masuk, tetapi Rencana Alokasi gagal dibuat.');
     } catch (e) {
       toast((e && e.message) || 'Simulasi gaji gagal.');
     } finally {

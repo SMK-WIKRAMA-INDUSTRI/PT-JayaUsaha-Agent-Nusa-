@@ -60,6 +60,9 @@ export default function RencanaCard({ planId, disabled, onChanged }) {
       if (onChanged) onChanged();
     } catch (e) {
       setErr((e && e.message) || 'Gagal memproses rencana.');
+      // Rencana mungkin sudah diputuskan di tab lain: muat ulang statusnya supaya tombol tidak menipu.
+      const { data } = await createClient().from('allocation_plans').select('id, status, rincian, kedaluwarsa_at').eq('id', plan.id).maybeSingle();
+      if (data) setPlan(data);
     } finally {
       setBusy(false);
     }
