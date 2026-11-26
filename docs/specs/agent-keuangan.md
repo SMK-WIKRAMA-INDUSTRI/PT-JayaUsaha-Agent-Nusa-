@@ -120,7 +120,7 @@ Saat register, sistem otomatis membuat rekening, Transaksi "saldo awal", 3 bulan
 1. Nasabah bercerita lewat chat, suara, atau telepon, misalnya "tadi abis jajan bakso 25 ribu".
 2. Model memanggil tool `catat_pengeluaran { barang, nominal, kategori }`. Server memeriksa bahwa nominal tersebut memang ada di ucapan Nasabah (`lib/nominal.js` mengenali "25rb", "25 ribu", "Rp25.000", "1,5 juta", dan sejenisnya). Jika tidak ada, agent menanyakan nominalnya dan tidak ada Aksi Tertunda yang dibuat.
 3. Server membuat Aksi Tertunda dan menyisipkan kartu "Catat Rp 25.000 – Bakso (Jajan)? [Catat] [Batal]". Agent mengulang nominalnya dan meminta konfirmasi. Di mode telepon, agent mengucapkannya.
-4. Nasabah mengonfirmasi lewat tombol atau jawaban "ya/benar/oke" di giliran berikutnya. Server menjalankan `ingest_transaksi` (arah `keluar`, kanal `catatan`, divalidasi terhadap Saldo Bebas), lalu menambahkan pesan `pembaruan` berisi saldo terbaru di akhir sesi.
+4. Nasabah mengonfirmasi lewat tombol atau jawaban "ya/benar/oke" di giliran berikutnya. Server menjalankan `ingest_transaksi` (arah `keluar`, kategori `catatan`, kanal `Catatan`, divalidasi terhadap Saldo Bebas), lalu menambahkan pesan `pembaruan` berisi saldo terbaru di akhir sesi.
 5. Jika Nasabah menolak, membahas hal lain, atau tidak menjawab dalam 30 menit, aksi menjadi `batal`.
 
 ### 5.6 Ringkasan Bulanan
@@ -202,6 +202,19 @@ Kartu (Rencana, Catatan Pengeluaran, Ringkasan, Penawaran, Pembelian Demo, Lapor
 - System prompt v2 dipakai sesi baru. Sesi lama tetap memakai v1.
 - Snapshot sesi baru memuat Saldo Bebas dan Kantong. Snapshot lama tanpa field `kantong` tetap dirender sama persis seperti Tahap 1.
 
+### 7.3 Keputusan pelaksanaan Tahap 3
+
+- **Kartu dari tool** disimpan di baris hasil tool (`chat_messages.role = 'tool'`). Kolom `content` berisi hasil tool berupa string JSON yang dibekukan, `tool = { id, name }`, dan `card` berisi `{ jenis: 'pengeluaran', action_id }` atau `{ jenis: 'ringkasan', data }`. Tidak ada baris `kartu` terpisah, karena isi kartu sudah ada di hasil tool.
+- **Panggilan tool** disimpan di baris `assistant` sebagai `tool = { calls: [{ id, name, arguments }] }`. `arguments` disimpan persis seperti string yang dikirim model, supaya prefix permintaan berikutnya tetap sama.
+- **Jawaban konfirmasi dinilai secara deterministik** oleh `lib/konfirmasi.js`, bukan oleh AI. Pesan pendek (paling banyak 6 kata dan tanpa angka) yang hanya berisi kata setuju dianggap "ya", dan yang hanya berisi kata penolakan dianggap "tidak". Pesan lain dianggap membahas hal lain, sehingga Aksi Tertunda dibatalkan (bagian 5.5 langkah 5). Contohnya, "iya tapi 30 ribu" membatalkan aksi lama, lalu model bisa memanggil tool lagi dengan nominal yang baru.
+- **Nominal hanya diperiksa terhadap pesan Nasabah terakhir.** Alur "tadi beli bakso", lalu "berapa?", lalu "25rb" tetap lolos, karena tool dipanggil pada giliran "25rb".
+- **Sesi lama (v1 dan v2) tidak memakai tool**, karena menambahkan definisi tool akan mengubah prefix-nya. Catatan Pengeluaran dan Ringkasan Bulanan hanya berlaku di sesi baru yang memakai system prompt v3.
+- **Transaksi seed diberi Kategori Belanja** sebagai berikut: Tagihan untuk Sewa kos, Token Listrik, Internet, dan Tagihan Kartu Kredit; Makan untuk Belanja Bulanan Supermarket (bahan makanan) dan Warung Makan; Lainnya untuk Top up Dompet Digital; Jajan untuk Kopi Senja dan Bakso; Belanja untuk Toko Buku. Transfer yang gagal tidak diberi kategori.
+- **Catatan Pengeluaran** dicatat sebagai Transaksi keluar dengan `kategori = 'catatan'` dan `kanal = 'Catatan'`.
+- **Skenario boros** membuat 4 Transaksi Keinginan yang totalnya dihitung dari batas pro-rata, sehingga Status Belanja dijamin menjadi Boros. Total belanja dibuat 20% di atas batas pro-rata, dengan tambahan minimal Rp 200.000. Akibatnya nominalnya bisa besar di akhir bulan.
+- **Teks cadangan**: jika putaran kedua model gagal atau kosong, server menyimpan dan mengirim "Silakan cek kartu di atas ya.", supaya riwayat tidak pernah berisi hasil tool tanpa balasan agent.
+- **Event server ke browser**: baris yang disisipkan server di tengah giliran (pembaruan dan kartu) dikirim di stream sebagai `data: {"nusa":{"pesan":<baris>}}`. Parser browser meneruskannya ke `onEvent`, sehingga kartu langsung tampil sebelum balasan agent, baik di chat, suara, maupun telepon.
+
 ## 8. Skema database (Supabase / Postgres)
 
 Semua nominal bertipe `bigint` dalam rupiah. Semua tabel milik Nasabah memiliki `user_id uuid references auth.users` dan policy RLS `select using (user_id = auth.uid())`.
@@ -210,7 +223,7 @@ Semua nominal bertipe `bigint` dalam rupiah. Semua tabel milik Nasabah memiliki 
 |---|---|---|
 | `profiles` | `user_id` PK, `nama_panggilan`, `pekerjaan`, `tanggal_gajian`, `pengeluaran_bulanan_koreksi` (boleh kosong), `profil_risiko` (enum `konservatif`/`moderat`/`agresif`, boleh kosong), `tawaran_proaktif` bool default true, `onboarding_selesai_at` | Nasabah boleh meng-update profilnya sendiri |
 | `accounts` | `id`, `user_id`, `nomor_akhir` | MVP: satu per Nasabah |
-| `transactions` | `id`, `account_id`, `user_id`, `arah` (`masuk`/`keluar`), `nominal`, `kategori` (`payroll`, `saldo_awal`, `tagihan`, `qris`, `transfer`, `investasi`, …), `kategori_belanja` (`makan`/`jajan`/`belanja`/`transportasi`/`tagihan`/`hiburan`/`lainnya`, boleh kosong; diisi untuk Transaksi keluar yang dihitung sebagai belanja), `pihak`, `kanal` (termasuk `catatan` untuk Catatan Pengeluaran), `status`, `waktu` | Buku besar Saldo Total |
+| `transactions` | `id`, `account_id`, `user_id`, `arah` (`masuk`/`keluar`), `nominal`, `kategori` (`payroll`, `saldo_awal`, `tagihan`, `qris`, `transfer`, `investasi`, …), `kategori_belanja` (`makan`/`jajan`/`belanja`/`transportasi`/`tagihan`/`hiburan`/`lainnya`, boleh kosong; diisi untuk Transaksi keluar yang dihitung sebagai belanja), `pihak`, `kanal` (termasuk `Catatan` untuk Catatan Pengeluaran), `status`, `waktu` | Buku besar Saldo Total |
 | `goals` | `id`, `user_id`, `nama`, `target`, `tenggat` (boleh kosong), `is_dana_darurat`, `kelipatan_target` (khusus Dana Darurat) | Dana Darurat tidak bisa dihapus |
 | `pockets` | `id`, `user_id`, `jenis` (`dana_darurat`/`goal`/`investasi`/`sosial`), `goal_id` (boleh kosong) | Satu Kantong per Goal |
 | `pocket_movements` | `id`, `pocket_id`, `user_id`, `nominal` (± ), `sumber` (`rencana`/`manual`), `plan_id` (boleh kosong), `waktu` | Buku besar Kantong |
@@ -223,7 +236,7 @@ Semua nominal bertipe `bigint` dalam rupiah. Semua tabel milik Nasabah memiliki 
 | `holdings` | `id`, `user_id`, `product_id`, `offer_id` (boleh kosong), `modal`, `transaction_id`, `created_at` | Kepemilikan; tidak bisa dicairkan di MVP |
 | `holding_valuations` | `id`, `holding_id`, `user_id`, `bulan_ke`, `nilai`, `created_at` | Valuasi dummy; nilai terkini = baris terakhir |
 | `chat_sessions` | `id`, `user_id`, `snapshot` jsonb, `system_prompt_version`, `dimulai_oleh` (`agent`/`nasabah`), `plan_id` (boleh kosong), `created_at` | |
-| `chat_messages` | `id`, `session_id`, `user_id`, `role` (`user`/`assistant`/`lampiran`/`pembaruan`/`kartu`/`tool`), `content`, `card` jsonb (boleh kosong), `tool` jsonb (boleh kosong: nama tool, argumen, id panggilan), `usage` jsonb (boleh kosong), `created_at` | |
+| `chat_messages` | `id`, `session_id`, `user_id`, `role` (`user`/`assistant`/`lampiran`/`pembaruan`/`kartu`/`tool`), `content`, `card` jsonb (boleh kosong), `tool` jsonb (boleh kosong: nama tool, argumen, id panggilan), `usage` jsonb (boleh kosong), `created_at` | Kartu dari tool (Catatan Pengeluaran, Ringkasan) dibawa baris `tool` di kolom `card`, bukan baris `kartu` terpisah (bagian 7.3) |
 | `notifications` | `id`, `user_id`, `jenis` (`gajian`), `ref_id`, `dibaca_at` | Realtime aktif |
 
 View untuk saldo: `v_saldo_total` (SUM `transactions` berstatus berhasil), `v_saldo_kantong` (SUM `pocket_movements` per Kantong), dan `v_saldo_bebas` (Saldo Total dikurangi SUM semua Kantong).
@@ -256,7 +269,7 @@ Migrasi disimpan di `supabase/migrations/`. Seed katalog (3 Institusi beserta Pr
 | `POST /api/notifications/:id/open` | Membuat sesi baru yang dimulai agent untuk Notifikasi Gajian |
 | `POST /api/plans/:id/apply` · `/ignore` | Menerapkan Rencana (body `{ ubah }` dari kartu, dihitung ulang server dengan `lib/alokasi.js`) atau mengabaikannya |
 | `POST /api/offers/:id/click` | Mengubah status Penawaran menjadi `diklik` |
-| `PATCH /api/actions/:id` | Mengubah nominal Aksi Tertunda Pembelian Demo dari kartu (divalidasi minimal pembelian dan Saldo Bebas) |
+| `PATCH /api/actions/:id` | Mengubah nominal Aksi Tertunda Pembelian Demo dari kartu (divalidasi minimal pembelian dan Saldo Bebas). Baru dibuat di Tahap 4, karena kartu Catatan Pengeluaran di Tahap 3 tidak bisa diedit. |
 | `POST /api/actions/:id/confirm` · `/cancel` | Menjalankan atau membatalkan Aksi Tertunda dari tombol kartu. Konfirmasi lewat ucapan "ya" ditangani `/api/chat`. |
 | `POST /api/demo/belanja` · `/boros` · `/valuasi` · `/dana-darurat-penuh` · `/reset` | Tombol Panel Demo, semuanya lewat jalur yang sama dengan kejadian sungguhan |
 

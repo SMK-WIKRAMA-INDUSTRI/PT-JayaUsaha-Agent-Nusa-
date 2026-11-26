@@ -20,8 +20,11 @@ Landing page dan chatbot customer service untuk bank, dengan tampilan glass, mas
 - Data keuangan Nasabah dari database ikut dikirim ke AI sebagai Snapshot Keuangan, sehingga Bantu bisa menjawab pertanyaan seperti "transfer ke Rina belum masuk"
 - Pengingat keamanan: Bantu tidak pernah meminta PIN, password, CVV, atau OTP
 - Saldo Total, Saldo Bebas, dan Kantong (Dana Darurat, Goal, Investasi) di panel kanan
-- **Panel Demo**: tombol **Gaji masuk** dan **Reset data demo**
+- **Panel Demo**: tombol **Gaji masuk**, **Belanja acak** (satu Transaksi QRIS acak), **Skenario boros** (beberapa belanja Keinginan sampai Status Belanja menjadi Boros), dan **Reset data demo**
 - Saat Gaji masuk, lonceng **Notifikasi Gajian** menyala (Supabase Realtime). Membukanya memulai percakapan baru dari agent dengan **kartu Rencana Alokasi** yang bisa diedit, lalu **Terapkan** (dana masuk Kantong) atau **Abaikan**. Angka rencana dihitung oleh `lib/alokasi.js`, bukan oleh AI.
+- **Catatan Pengeluaran**: ceritakan pengeluaran lewat chat, suara, atau telepon, misalnya "tadi jajan bakso 25 ribu". Agent menyiapkan kartu Catatan Pengeluaran, dan pengeluaran baru tercatat (saldo berkurang) setelah Anda menekan **Catat** atau menjawab "ya". Nominal yang tidak Anda sebutkan tidak pernah dicatat.
+- **Ringkasan Bulanan**: tanyakan "Pengeluaranku bulan ini gimana?" untuk melihat kartu ringkasan belanja per Kategori Belanja dengan Status Belanja **Hemat**, **Aman**, atau **Boros**. Angkanya dihitung oleh `lib/ringkasan.js`, bukan oleh AI.
+- Catatan Pengeluaran dan Ringkasan Bulanan hanya ada di percakapan baru. Setelah update, tekan **Chat baru**.
 
 ## Tech stack
 
@@ -56,6 +59,12 @@ lib/
   format.js             format rupiah dan tanggal
   sse.js                parser stream SSE
   data.js               pengaturan browser (Deepgram, lampiran) dan chip contoh
+  kategori.js           Kategori Belanja beserta kelompok Kebutuhan atau Keinginan
+  nominal.js            mengenali nominal rupiah di ucapan Nasabah
+  konfirmasi.js         menilai jawaban konfirmasi Nasabah (ya, tidak, atau lain)
+  pengeluaran.js        validasi Catatan Pengeluaran serta teks kartu dan pembaruannya
+  ringkasan.js          Ringkasan Bulanan dan Status Belanja
+  demo.js               data Belanja acak dan Skenario boros untuk Panel Demo
   api.js                klien streaming ke /api/chat
   supabase/             klien Supabase (browser, server, admin)
   server/               helper server untuk route sesi dan respons HTTP
@@ -89,7 +98,7 @@ npm start
 ## Menyiapkan Supabase dan API key
 
 1. Buat project di supabase.com. Di **Authentication > Sign In / Providers > Email**, matikan **Confirm email** untuk demo.
-2. Jalankan isi `supabase/migrations/20261124000001_fondasi.sql` di **SQL Editor**, lalu `supabase/migrations/20261126000001_alokasi.sql` (masing-masing sekali, berurutan).
+2. Jalankan isi `supabase/migrations/20261124000001_fondasi.sql` di **SQL Editor**, lalu `supabase/migrations/20261126000001_alokasi.sql`, lalu `supabase/migrations/20261127000001_pengeluaran.sql` (masing-masing sekali, berurutan).
 3. Salin `.env.example` menjadi `.env.local`, lalu isi URL dan key Supabase serta `NETRA_API_KEY`.
 4. `npm run dev`, buka http://localhost:3000/register, lalu jalani onboarding.
 
