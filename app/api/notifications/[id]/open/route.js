@@ -32,7 +32,8 @@ export async function POST(_req, { params }) {
   await kedaluwarsakanRencana(admin, user.id);
   const { data: plan } = await admin.from('allocation_plans').select('id, rincian, transaction_id').eq('id', notif.ref_id).maybeSingle();
   if (!plan) return fail(404, 'Rencana Alokasi untuk notifikasi ini sudah tidak ada.');
-  const { data: tx } = await admin.from('transactions').select('waktu').eq('id', plan.transaction_id).single();
+  const { data: tx } = await admin.from('transactions').select('waktu').eq('id', plan.transaction_id).maybeSingle();
+  if (!tx) return fail(404, 'Transaksi Gaji untuk notifikasi ini sudah tidak ada.');
 
   let session;
   try {
@@ -51,14 +52,18 @@ export async function POST(_req, { params }) {
     content: renderRencana(plan.rincian, tx.waktu),
     card: { jenis: 'rencana', plan_id: plan.id }
   });
-  if (kErr) return fail(500, kErr.message);
+  if (kErr) {
+    // Jangan tinggalkan sesi tanpa kartu: membuka ulang notifikasi akan mengembalikan sesi kosong itu.
+    await admin.from('chat_sessions').delete().eq('id', session.id);
+    return fail(500, kErr.message);
+  }
 
   // Sapaan agent. Jika gagal, sesi tetap berisi kartu dan Nasabah bisa langsung bertanya.
   if (netraSiap()) {
     try {
       const { data: s } = await admin.from('chat_sessions').select('id, snapshot, system_prompt_version').eq('id', session.id).single();
       const { data: rows } = await admin.from('chat_messages').select('id, role, content, created_at').eq('session_id', session.id).order('id');
-      const res = await panggilNetra(buildPromptMessages({ session: s, history: rows }), { maxTokens: 400 });
+      const res = await panggilNetra(buildPromptMessages({ session: s, history: rows }), { maxTokens: 400, signal: AbortSignal.timeout(25000) });
       if (res.ok) {
         const j = await res.json();
         const text = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;

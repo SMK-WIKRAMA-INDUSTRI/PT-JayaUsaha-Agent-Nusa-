@@ -34,7 +34,12 @@ export async function POST(req, { params }) {
   const { error } = await admin.rpc('terapkan_rencana', { p_user: user.id, p_plan: id, p_rincian: rincian });
   if (error) return failDb(error);
 
-  const { data: saldo } = await admin.from('v_saldo_bebas').select('saldo_bebas').eq('user_id', user.id).single();
-  await tambahPembaruanRencana(admin, user.id, id, renderRencanaDiterapkan(rincian, Number(saldo.saldo_bebas), new Date().toISOString()));
+  // Dana sudah dipindah: kegagalan membaca saldo tidak boleh membuat respons gagal.
+  const { data: saldo } = await admin.from('v_saldo_bebas').select('saldo_bebas').eq('user_id', user.id).maybeSingle();
+  if (saldo) {
+    await tambahPembaruanRencana(admin, user.id, id, renderRencanaDiterapkan(rincian, Number(saldo.saldo_bebas), new Date().toISOString()));
+  } else {
+    console.error('[plans/apply] Saldo Bebas gagal dibaca; pesan pembaruan dilewati.');
+  }
   return Response.json({ plan: { id, status: 'diterapkan', rincian } });
 }
